@@ -90,7 +90,7 @@ class SamsungSDIMonitor:
             self.dbus_service.add_path('/Mgmt/ProcessVersion', '1.0.0')
             self.dbus_service.add_path('/Mgmt/Connection', f'Samsung SDI System {self.system_id}')
             self.dbus_service.add_path('/DeviceInstance', self.device_instance)
-            self.dbus_service.add_path('/ProductId', 0)
+            self.dbus_service.add_path('/ProductId', 0xB005)  # Lithium battery
             self.dbus_service.add_path('/ProductName', f"{product_name} (System {self.system_id})")
             self.dbus_service.add_path('/FirmwareVersion', '1.0.0')
             self.dbus_service.add_path('/HardwareVersion', 'Samsung SDI ELPM482-00005')
