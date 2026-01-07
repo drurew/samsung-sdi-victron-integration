@@ -14,7 +14,7 @@ Thank you for your interest in contributing to the Samsung SDI Victron Integrati
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/samsung-sdi-victron-integration.git
+   git clone https://github.com/drurew/samsung-sdi-victron-integration.git
    cd samsung-sdi-victron-integration
    ```
 
@@ -77,7 +77,7 @@ docs(install): update installation instructions for Venus OS v3.0
 ## 📝 Making Changes
 
 ### 1. Choose an Issue
-- Check existing [GitHub Issues](https://github.com/yourusername/samsung-sdi-victron-integration/issues)
+- Check existing [GitHub Issues](https://github.com/drurew/samsung-sdi-victron-integration/issues)
 - Create a new issue if your change isn't already tracked
 - Comment on the issue to indicate you're working on it
 
