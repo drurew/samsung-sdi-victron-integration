@@ -11,7 +11,7 @@ A complete Victron Venus OS integration for Samsung SDI ELPM482-00005 lithium-io
 
 ```bash
 # 1. Clone this repository
-git clone https://github.com/yourusername/samsung-sdi-victron-integration.git
+git clone https://github.com/drurew/samsung-sdi-victron-integration.git
 cd samsung-sdi-victron-integration
 
 # 2. Copy to Venus OS
@@ -149,8 +149,8 @@ This software is provided as-is for educational and integration purposes. Users 
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/samsung-sdi-victron-integration/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/samsung-sdi-victron-integration/discussions)
+- **Issues**: [GitHub Issues](https://github.com/drurew/samsung-sdi-victron-integration/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/drurew/samsung-sdi-victron-integration/discussions)
 
 ---
 

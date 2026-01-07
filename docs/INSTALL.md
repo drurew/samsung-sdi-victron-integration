@@ -27,7 +27,7 @@
 **Option A: From GitHub (Recommended)**
 ```bash
 # On your computer
-git clone https://github.com/yourusername/samsung-sdi-victron-integration.git
+git clone https://github.com/drurew/samsung-sdi-victron-integration.git
 cd samsung-sdi-victron-integration
 
 # Transfer to Venus OS
@@ -38,7 +38,7 @@ scp -r . root@venus-ip:/data/samsung-sdi/
 ```bash
 # On Venus OS device
 cd /data
-wget https://github.com/yourusername/samsung-sdi-victron-integration/archive/main.zip
+wget https://github.com/drurew/samsung-sdi-victron-integration/archive/main.zip
 unzip main.zip
 mv samsung-sdi-victron-integration-main samsung-sdi
 ```
