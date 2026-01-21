@@ -79,4 +79,5 @@ htmlcov/
 
 # Distribution
 *.tar.gz
-*.zip
+*.zip*.tar.gz
+__pycache__/
