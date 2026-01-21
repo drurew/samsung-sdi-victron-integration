@@ -9,18 +9,23 @@ A complete Victron Venus OS integration for Samsung SDI ELPM482-00005 lithium-io
 
 **For complete installation instructions, see [INSTALL.md](docs/INSTALL.md)**
 
+### Method 1: SetupHelper (Package Manager) - Recommended
+1. Install [Kwimdrem's SetupHelper (Package Manager)](https://github.com/kwindrem/SetupHelper).
+2. Download `samsung-sdi-victron-integration-<version>.tar.gz` (if available) or add the repository URL if supported.
+3. Install via the Package Manager menu.
+
+### Method 2: Manual Install
+
 ```bash
-# 1. Clone this repository
-git clone https://github.com/drurew/samsung-sdi-victron-integration.git
-cd samsung-sdi-victron-integration
+# 1. Download/Clone this repository
+wget https://github.com/drurew/samsung-sdi-victron-integration/archive/refs/heads/main.zip
+unzip main.zip
+mv samsung-sdi-victron-integration-main /data/samsung-sdi-victron-integration
 
-# 2. Copy to Venus OS
-scp -r . root@your-venus-ip:/data/samsung-sdi/
-
-# 3. Install and start service
-ssh root@your-venus-ip
-cd /data/samsung-sdi
-./install.sh
+# 2. Run setup
+cd /data/samsung-sdi-victron-integration
+chmod +x setup
+./setup install
 ```
 
 ## ✨ Features
