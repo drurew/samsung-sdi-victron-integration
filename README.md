@@ -10,9 +10,12 @@ A complete Victron Venus OS integration for Samsung SDI ELPM482-00005 lithium-io
 **For complete installation instructions, see [INSTALL.md](docs/INSTALL.md)**
 
 ### Method 1: SetupHelper (Package Manager) - Recommended
-1. Install [Kwimdrem's SetupHelper (Package Manager)](https://github.com/kwindrem/SetupHelper).
-2. Download `samsung-sdi-victron-integration-<version>.tar.gz` (if available) or add the repository URL if supported.
-3. Install via the Package Manager menu.
+1.  **Online Install**: Add the repository URL to SetupHelper and install from the menu.
+2.  **Offline/USB Install**:
+    *   Download the verified release package (`samsung-sdi-victron-integration-vX.X.X.tar.gz`) from GitHub Releases.
+    *   *Alternatively*, create it yourself: Run `./create_package.sh` in the source folder.
+    *   Copy the `.tar.gz` file to a USB stick.
+    *   Insert into Cerbo GX and install via SetupHelper's "Install from USB/Storage" option.
 
 ### Method 2: Manual Install
 
