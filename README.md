@@ -5,7 +5,7 @@
 
 A complete Victron Venus OS integration for Samsung SDI ELPM482-00005 lithium-ion battery modules. Seamlessly integrates Samsung SDI battery systems with Victron Energy equipment including MultiPlus, Cerbo GX, and other Venus OS devices.
 
-## 🚀 Quick Start
+## Quick Start
 
 **For complete installation instructions, see [INSTALL.md](docs/INSTALL.md)**
 
@@ -31,25 +31,25 @@ chmod +x setup
 ./setup install
 ```
 
-## ✨ Features
+## Features
 
-- **🔌 CAN Communication**: Direct CAN 2.0A communication at 500kbps with Samsung SDI modules
-- **📊 Real-time Monitoring**: System voltage, current, SOC, SOH, temperature, and alarm status
-- **🧠 Intelligent Aggregation**: Battery aggregator module for MultiPlus ESS compatibility
-- **⚡ Smart Charging**: Respects Samsung SDI charge/discharge limits and MultiPlus capabilities
-- **🔗 D-Bus Integration**: Full Victron D-Bus service implementation
-- **🏠 ESS Compatible**: Optimized for Energy Storage System operation
-- **🔧 Easy Configuration**: Simple INI file configuration
-- **📱 Monitoring Tools**: Built-in diagnostic and monitoring scripts
+- ** CAN Communication**: Direct CAN 2.0A communication at 500kbps with Samsung SDI modules
+- ** Real-time Monitoring**: System voltage, current, SOC, SOH, temperature, and alarm status
+- ** Intelligent Aggregation**: Battery aggregator module for MultiPlus ESS compatibility
+- ** Smart Charging**: Respects Samsung SDI charge/discharge limits and MultiPlus capabilities
+- ** D-Bus Integration**: Full Victron D-Bus service implementation
+- ** ESS Compatible**: Optimized for Energy Storage System operation
+- ** Easy Configuration**: Simple INI file configuration
+- ** Monitoring Tools**: Built-in diagnostic and monitoring scripts
 
-## 🛠️ Hardware Requirements
+## Hardware Requirements
 
 - **Samsung SDI ELPM482-00005**: 4.84kWh lithium-ion battery module
 - **Victron Cerbo GX or Venus GX**: Venus OS platform (v2.8x+)
 - **CAN Interface**: Properly configured CAN bus (can0) at 500kbps
 - **MultiPlus Inverter/Charger**: For ESS operation (optional but recommended)
 
-## 📋 CAN Message Support
+## CAN Message Support
 
 Based on Samsung SDI Product Specification ELPM482-00005 Rev 0.2:
 
@@ -61,7 +61,7 @@ Based on Samsung SDI Product Specification ELPM482-00005 Rev 0.2:
 | 0x503 | Cell Summary | Min/Max/Avg cell voltages |
 | 0x504 | Temperature Summary | Min/Max/Avg temperatures |
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 Samsung SDI Module ── CAN 2.0A (500kbps) ── SamsungSDICANClient
@@ -73,7 +73,7 @@ SamsungSDIMonitor ── D-Bus ── Venus OS ── BatteryAggregator
 MultiPlus / Cerbo GX ── ESS Integration ── Grid/Charging Control
 ```
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 samsung-sdi-victron-integration/
@@ -92,7 +92,7 @@ samsung-sdi-victron-integration/
     └── README.md                      # Additional documentation
 ```
 
-## 🔧 Configuration
+## Configuration
 
 Edit `config.ini` to match your setup:
 
@@ -113,7 +113,7 @@ max_charge_current = 50.0
 max_discharge_current = 50.0
 ```
 
-## 📊 D-Bus Services
+## D-Bus Services
 
 ### Individual System Service
 - **Service**: `com.victronenergy.battery.samsung_sdi_system1`
@@ -151,7 +151,7 @@ python3 diagnose_charging.py
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 This software is provided as-is for educational and integration purposes. Users are responsible for ensuring compatibility with their specific hardware and use cases. Always follow proper safety procedures when working with electrical systems.
 
@@ -162,4 +162,4 @@ This software is provided as-is for educational and integration purposes. Users 
 
 ---
 
-**Made with ❤️ for the Victron & Samsung SDI communities**
+**Made with ❤ for the Victron & Samsung SDI communities**
