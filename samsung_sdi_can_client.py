@@ -87,7 +87,7 @@ class SamsungSDICANClient:
         ),
     }
 
-    def __init__(self, can_interface: str = 'can0', timeout: float = 1.0):
+    def __init__(self, can_interface: str = 'vecan0', timeout: float = 1.0):
         self.can_interface = can_interface
         self.timeout = timeout
         self.bus: Optional[can.Bus] = None
