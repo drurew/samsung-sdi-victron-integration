@@ -29,7 +29,18 @@ echo "Installing to ${INSTALL_DIR}..."
 
 # 1. Prepare Installation Directory
 mkdir -p "${INSTALL_DIR}"
-cp -r ./* "${INSTALL_DIR}/"
+
+# Resolve absolute paths to check if we are installing from the target directory
+CURRENT_DIR=$(readlink -f "$PWD")
+TARGET_DIR=$(readlink -f "${INSTALL_DIR}")
+
+if [ "$CURRENT_DIR" != "$TARGET_DIR" ]; then
+    echo "Copying files from $CURRENT_DIR to $TARGET_DIR..."
+    cp -r ./* "${INSTALL_DIR}/"
+else
+    echo "Running from installation directory. Skipping copy."
+fi
+
 chmod +x "${INSTALL_DIR}/"*.py
 chmod +x "${INSTALL_DIR}/"*.sh
 
