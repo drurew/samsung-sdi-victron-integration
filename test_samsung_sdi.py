@@ -5,6 +5,7 @@ Test script for Samsung SDI CAN client
 
 import sys
 import os
+import time
 sys.path.append(os.path.dirname(__file__))
 
 try:
@@ -20,24 +21,43 @@ def test_can_client():
     print("=" * 40)
 
     try:
-        # Try to create client (will fail without CAN hardware)
-        client = SamsungSDICANClient('can0')
+        if len(sys.argv) > 1:
+            interface = sys.argv[1]
+        else:
+            interface = 'vcan0'  # Default to virtual interface for testing
+        
+        print(f"🔌 Connecting to interface: {interface}")
+        
+        # Try to create client
+        client = SamsungSDICANClient(interface)
         print("✅ CAN client created successfully")
 
-        # Test data reading (will return None without hardware)
+        # Wait a moment for data
+        print("⏳ Waiting for CAN data (start the simulator if using vcan0)...")
+        time.sleep(2)
+
+        # Test data reading
         voltage = client.get_voltage()
         current = client.get_current()
         soc = client.get_soc()
 
-        print(f"Voltage: {voltage}")
-        print(f"Current: {current}")
-        print(f"SOC: {soc}")
+        print("\n📊 BMS Data Received:")
+        print(f"   Voltage: {voltage} V")
+        print(f"   Current: {current} A")
+        print(f"   SOC:     {soc} %")
 
-        print("✅ CAN client methods work (no hardware connected)")
+        if voltage is None:
+             print("\n⚠️  No data received. Is the BMS (or simulator) connected and transmitting?")
+        else:
+             print("\n✅ Valid data received!")
+
+        print("\n✅ CAN client methods work")
+        return True
 
     except Exception as e:
         print(f"❌ CAN client test failed: {e}")
         return False
+
 
     return True
 

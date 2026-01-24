@@ -63,30 +63,43 @@ if ! command -v pip3 &> /dev/null; then
 fi
 
 # Install Required Packages
+echo "Installing dependencies..."
+
+# Method 1: Try opkg (Venus OS Native)
+if command -v opkg &> /dev/null; then
+    echo "Attempting to install dependencies via opkg..."
+    # Update not always necessary/possible online, but good to try if package missing
+    # We don't limit to specific versions
+    opkg update || true
+    opkg install python3-can python3-dbus python3-pygobject || echo "opkg install failed/incomplete. Falling back to pip..."
+fi
+
+# Method 2: pip (Universal)
 if command -v pip3 &> /dev/null; then
-    echo "Installing Python packages..."
-    # We use --system to ensure they install to the global environment if needed
+    echo "Checking/Installing Python packages via pip..."
+    # Upgrade pip to ensure wheel support etc.
     pip3 install --upgrade pip || true
-    pip3 install python-can dbus-python pygobject3 || echo "Warning: Pip install failed. Checking if modules exist..."
+    # Use PyGObject instead of pygobject3
+    pip3 install python-can dbus-python PyGObject || echo "Warning: Pip install failed. This is expected if packages are system-managed."
 else
-    echo "WARNING: pip3 still not available. Skipping auto-install of python packages."
+    echo "WARNING: pip3 not available. Skipping pip install."
 fi
 
 # Verification
 MISSING_DEPS=0
 if ! check_module "can"; then echo "ERROR: Missing 'python-can'"; MISSING_DEPS=1; fi
 if ! check_module "dbus"; then echo "ERROR: Missing 'dbus-python'"; MISSING_DEPS=1; fi
-if ! check_module "gi"; then echo "ERROR: Missing 'pygobject3'"; MISSING_DEPS=1; fi
+# Check for gi.repository
+if ! python3 -c "import gi" > /dev/null 2>&1; then echo "ERROR: Missing 'PyGObject' (gi)"; MISSING_DEPS=1; fi
 
 if [ $MISSING_DEPS -eq 1 ]; then
     echo "---------------------------------------------------"
     echo "CRITICAL: Missing Python dependencies."
     echo "The service will NOT start without these packages."
     echo "Try: opkg install python3-dbus python3-pygobject python3-can"
-    echo "Or via pip: pip3 install python-can dbus-python pygobject3"
+    echo "Or via pip: pip3 install python-can dbus-python PyGObject"
     echo "---------------------------------------------------"
-    # We don't exit here to allow advanced users to fix it later, but we warn heavily.
-    sleep 3
+    exit 1
 fi
 
 # 3. Service Configuration
