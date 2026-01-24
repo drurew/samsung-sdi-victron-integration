@@ -19,6 +19,19 @@ This will check:
 
 ## 🚨 Common Issues
 
+### 0. Windows Copy Error: "Filename invalid or too long"
+**Symptoms:**
+- Error dialog on Windows when dragging files to SD card/USB.
+- Specific file mentioned (e.g., `install.sh`).
+
+**Cause:**
+This is a Windows limitation (MAX_PATH 260 characters). GitHub ZIP downloads often create nested folders with long names, exceeding the limit.
+
+**Solution:**
+1. **Prefer the `.tar.gz` Archive**: For SetupHelper/Blind install, do not extract. Copy the single `.tar.gz` file to the USB stick.
+2. **Shorten Path**: If extracting, extract to `C:\temp` instead of `Downloads`.
+3. **Use 7-Zip**: It handles long paths better than Windows Explorer.
+
 ### 1. Service Won't Start
 
 **Symptoms:**
