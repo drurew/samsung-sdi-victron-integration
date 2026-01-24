@@ -5,12 +5,15 @@
 
 A complete Victron Venus OS integration for Samsung SDI ELPM482-00005 lithium-ion battery modules. Seamlessly integrates Samsung SDI battery systems with Victron Energy equipment including MultiPlus, Cerbo GX, and other Venus OS devices.
 
-## Project Lineage & Credits
+## Project Lineage
 
-This project builds upon the excellent foundational work of the open-source community. It is an evolution of earlier drivers, engineered for higher safety and ease of use.
+This driver was originally forked from the **Super-B Victron Integration** project and adapted for the Samsung SDI ELPM482-00005 based on factory specifications.
 
-*   **Protocol Logic**: Derived from **[ploys/dbus-samsung-sdi](https://github.com/ploys/dbus-samsung-sdi)**. The pioneers who reverse-engineered the CAN IDs (0x500-0x504).
-*   **Safety Logic**: Inspired by **[Louisvdw/dbus-serialbattery](https://github.com/Louisvdw/dbus-serialbattery)**. We adapted their best-in-class DVCC temperature derating and voltage tapering algorithms for specific use with Samsung SDI modules.
+As the project evolved, we have integrated advanced logic from the open-source community to improve safety and performance:
+
+*   **Protocol Logic**: Originally implemented from Samsung SDI factory datasheets.
+*   **Safety Enhancements**: We have since adopted best-in-class safety algorithms (DVCC, Temperature Derating) inspired by **[Louisvdw/dbus-serialbattery](https://github.com/Louisvdw/dbus-serialbattery)**.
+*   **Community Validation**: Protocol details validated against findings from **[ploys/dbus-samsung-sdi](https://github.com/ploys/dbus-samsung-sdi)**.
 
 ### Why Choose This Driver?
 
