@@ -34,7 +34,9 @@ We have focused on **Stability, Safety, and Ease of Install**.
 **For complete installation instructions, see [INSTALL.md](docs/INSTALL.md)**
 
 ### Method 1: Automatic "Blind Install" (USB/SD Card)
-This is the easiest method. It uses the built-in Victron auto-install mechanism.
+**This is the intended and recommended installation method.** It utilizes the built-in Victron auto-install mechanism to deploy the driver without needing SSH access.
+
+> **⚠️ Work in Progress**: This "Blind Install" feature is currently in beta. While designed to be the primary installation method, please verify operation after reboot.
 
 1.  Download the **`venus-data.tar.gz`** file from the Releases page.
     *   *Note: If you build it yourself, `create_package.sh` now outputs this filename.*
