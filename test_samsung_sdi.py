@@ -24,7 +24,7 @@ def test_can_client():
         if len(sys.argv) > 1:
             interface = sys.argv[1]
         else:
-            interface = 'vcan0'  # Default to virtual interface for testing
+            interface = 'vecan0'  # Default to standard Victron virtual interface
         
         print(f"🔌 Connecting to interface: {interface}")
         
