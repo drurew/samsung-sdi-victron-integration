@@ -19,66 +19,112 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-INSTALL_DIR="/data/samsung-sdi"
+APP_NAME="samsung-sdi"
+INSTALL_DIR="/data/${APP_NAME}"
 SERVICE_NAME="samsung-sdi-bms"
-SERVICE_FILE="/service/${SERVICE_NAME}"
+SERVICE_LINK="/service/${SERVICE_NAME}"
+SERVICE_TARGET="${INSTALL_DIR}/service"
 
-echo "Installing Samsung SDI Victron Integration..."
+echo "Installing to ${INSTALL_DIR}..."
 
-# Check if already installed
-if [ -f "${SERVICE_FILE}" ]; then
-    echo "Service already exists. Removing old installation..."
-    rm -f "${SERVICE_FILE}"
-    sleep 2
+# 1. Prepare Installation Directory
+mkdir -p "${INSTALL_DIR}"
+cp -r ./* "${INSTALL_DIR}/"
+chmod +x "${INSTALL_DIR}/"*.py
+chmod +x "${INSTALL_DIR}/"*.sh
+
+# 2. Dependency Management
+echo "Checking dependencies..."
+
+# Function to check python module
+check_module() {
+    python3 -c "import $1" > /dev/null 2>&1
+}
+
+# Try to install pip if missing
+if ! command -v pip3 &> /dev/null; then
+    echo "pip3 not found. Attempting to install pip..."
+    if command -v opkg &> /dev/null; then
+        opkg update && opkg install python3-pip
+    else
+        echo "WARNING: opkg not found. Could not install pip. Please install 'python3-pip' manually."
+    fi
 fi
 
-# Create service file
-echo "Creating service file..."
-cat > "${SERVICE_FILE}" << EOF
+# Install Required Packages
+if command -v pip3 &> /dev/null; then
+    echo "Installing Python packages..."
+    # We use --system to ensure they install to the global environment if needed
+    pip3 install --upgrade pip || true
+    pip3 install python-can dbus-python pygobject3 || echo "Warning: Pip install failed. Checking if modules exist..."
+else
+    echo "WARNING: pip3 still not available. Skipping auto-install of python packages."
+fi
+
+# Verification
+MISSING_DEPS=0
+if ! check_module "can"; then echo "ERROR: Missing 'python-can'"; MISSING_DEPS=1; fi
+if ! check_module "dbus"; then echo "ERROR: Missing 'dbus-python'"; MISSING_DEPS=1; fi
+if ! check_module "gi"; then echo "ERROR: Missing 'pygobject3'"; MISSING_DEPS=1; fi
+
+if [ $MISSING_DEPS -eq 1 ]; then
+    echo "---------------------------------------------------"
+    echo "CRITICAL: Missing Python dependencies."
+    echo "The service will NOT start without these packages."
+    echo "Try: opkg install python3-dbus python3-pygobject python3-can"
+    echo "Or via pip: pip3 install python-can dbus-python pygobject3"
+    echo "---------------------------------------------------"
+    # We don't exit here to allow advanced users to fix it later, but we warn heavily.
+    sleep 3
+fi
+
+# 3. Service Configuration
+echo "Configuring service..."
+
+# Remove existing service if it exists (symlink or file)
+if [ -e "${SERVICE_LINK}" ]; then
+    echo "Removing existing service link..."
+    rm -rf "${SERVICE_LINK}"
+fi
+
+# Create service directory structure in INSTALL_DIR
+mkdir -p "${SERVICE_TARGET}"
+mkdir -p "${SERVICE_TARGET}/log"
+
+# Create Run Script
+cat > "${SERVICE_TARGET}/run" << EOF
 #!/bin/sh
 exec 2>&1
 cd ${INSTALL_DIR}
 exec python3 samsung_sdi_bms_service.py
 EOF
+chmod +x "${SERVICE_TARGET}/run"
 
-chmod +x "${SERVICE_FILE}"
-
-# Make sure CAN interface is configured
-echo "Checking CAN interface..."
-if [ ! -f "/etc/venus/can.conf" ]; then
-    echo "Creating CAN configuration..."
-    mkdir -p /etc/venus
-    cat > /etc/venus/can.conf << EOF
-interface=can0
-bitrate=500000
+# Create Log Run Script
+cat > "${SERVICE_TARGET}/log/run" << EOF
+#!/bin/sh
+exec multilog t s25000 n4 ${INSTALL_DIR}/log
 EOF
+chmod +x "${SERVICE_TARGET}/log/run"
+
+# 4. Enable Service
+echo "Enabling service..."
+ln -s "${SERVICE_TARGET}" "${SERVICE_LINK}"
+
+# 5. CAN Interface Config (Optional)
+if [ ! -f "/etc/venus/can.conf" ]; then
+    echo "Creating default CAN config..."
+    mkdir -p /etc/venus
+    echo "interface=can0" > /etc/venus/can.conf
+    echo "bitrate=250000" >> /etc/venus/can.conf
 fi
 
-# Install Python dependencies
-echo "Installing Python dependencies..."
-pip3 install --quiet python-can dbus-python pygobject3 || {
-    echo "Warning: Some Python packages may not have installed correctly"
-    echo "You may need to install them manually: pip3 install python-can dbus-python pygobject3"
-}
+# 6. Wait for service to start
+echo "Waiting for service to start..."
+sleep 2
+svstat "${SERVICE_LINK}"
 
-# Set permissions
-echo "Setting permissions..."
-chmod +x "${INSTALL_DIR}/"*.py
-chmod +x "${INSTALL_DIR}/"*.sh
-
-# Start service
-echo "Starting service..."
-svc -t /service/${SERVICE_NAME} || {
-    echo "Warning: Could not start service with svc"
-    echo "Try restarting the service manually: svc -t /service/${SERVICE_NAME}"
-}
-
-echo "Installation complete!"
-echo ""
-echo "Next steps:"
-echo "1. Check service status: svstat /service/${SERVICE_NAME}"
-echo "2. View logs: tail -f /service/${SERVICE_NAME}/log/main/current"
-echo "3. Run diagnostics: cd ${INSTALL_DIR} && python3 diagnose_charging.py"
-echo "4. Check Victron interface for Samsung SDI battery"
-echo ""
-echo "For detailed instructions, see docs/INSTALL.md"
+echo "---------------------------------------------------"
+echo "Installation Complete!"
+echo "path: ${INSTALL_DIR}"
+echo "---------------------------------------------------"
