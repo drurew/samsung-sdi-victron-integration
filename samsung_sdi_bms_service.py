@@ -78,7 +78,18 @@ class SamsungSDIMonitor:
         self.MAX_VOLTAGE = 58.1
         self.MIN_VOLTAGE = 40.0
         self.MAX_CURRENT = 96.0 # 100A Nominal
+
+        # Hysteresis memory
+        self._last_ccl = 0
+        self._last_dcl = 0
     
+    def _apply_hysteresis(self, old_val, new_val, threshold=1.0):
+        """Prevents jitter (fan ramping) by ignoring small changes."""
+        if old_val is None: return new_val
+        if abs(new_val - old_val) < threshold:
+            return old_val
+        return new_val
+
     def _calculate_dvcc_limits(self, voltage: float, temperature: float, soc: float) -> dict:
         """
         Calculate Dynamic Voltage and Current Control (DVCC) limits
@@ -233,6 +244,13 @@ class SamsungSDIMonitor:
 
             # 3. Calculate Limits (DVCC)
             limits = self._calculate_dvcc_limits(voltage, float(temperature) if temperature else 25.0, soc)
+
+            # Apply Hysteresis to prevent inverter hunting/fan cycling
+            limits['ccl'] = self._apply_hysteresis(self._last_ccl, limits['ccl'])
+            limits['dcl'] = self._apply_hysteresis(self._last_dcl, limits['dcl'])
+            
+            self._last_ccl = limits['ccl']
+            self._last_dcl = limits['dcl']
 
             # Create data dict for D-Bus update
             system_data = {
