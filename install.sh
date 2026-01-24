@@ -58,34 +58,55 @@ register_mod() {
     local MOD_NAME=$2
     local MOD_VERSION=$3
     local MOD_REPO=$4
-    local MOD_FILE=$5
-    
-    # Proposed standard location in persistent storage
-    local MANIFEST_DIR="/data/etc/venus-mods"
-    mkdir -p "$MANIFEST_DIR"
-    
-    # Calculate hash to verify file integrity later
-    local HASH="none"
-    if [ -f "$MOD_FILE" ]; then
-        HASH=$(md5sum "$MOD_FILE" | awk '{print $1}')
-    fi
-    
-    local TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    
-    # Write JSON Manifest
-    cat > "$MANIFEST_DIR/${MOD_ID}.json" <<EOF
-{
-  "id": "${MOD_ID}",
-  "name": "${MOD_NAME}",
-  "version": "${MOD_VERSION}",
-  "repository": "${MOD_REPO}",
-  "installed_at": "${TIMESTAMP}",
-  "integrity_check": {
-    "file": "${MOD_FILE}",
-    "md5": "${HASH}"
-  }
+    local MOD_PATH=$5
+
+    python3 -c "
+import json
+import os
+import hashlib
+import datetime
+
+def get_hash(path):
+    with open(path, 'rb') as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+mod_id = '$MOD_ID'
+data = {
+    'id': '$MOD_ID',
+    'name': '$MOD_NAME',
+    'version': '$MOD_VERSION',
+    'repository': '$MOD_REPO',
+    'installed_at': datetime.datetime.utcnow().isoformat() + 'Z',
+    'files': {}
 }
-EOF
+
+root = '$MOD_PATH'
+if os.path.isfile(root):
+    data['files'][os.path.basename(root)] = get_hash(root)
+else:
+    for dirpath, dirnames, files in os.walk(root):
+        if '__pycache__' in dirnames: dirnames.remove('__pycache__')
+        dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+        
+        for f in files:
+            if f.startswith('.'): continue
+            if f.endswith(('.pyc', '.log', '.txt', '.md')): continue
+            # Allow configuration modification (Tamper Evident Seal)
+            if f.endswith(('.ini', '.yaml', '.json', '.conf', '.xml')): continue
+            
+            full_path = os.path.join(dirpath, f)
+            rel_path = os.path.relpath(full_path, root)
+            try:
+                data['files'][rel_path] = get_hash(full_path)
+            except: pass
+
+manifest_dir = '/data/etc/venus-mods'
+if not os.path.exists(manifest_dir):
+    os.makedirs(manifest_dir)
+
+with open(f'{manifest_dir}/{mod_id}.json', 'w') as f:
+    json.dump(data, f, indent=2)
+"
     echo "Module '${MOD_ID}' registered to Venus OS manifest."
 }
 
@@ -186,7 +207,7 @@ sleep 2
 svstat "${SERVICE_LINK}"
 
 # 7. Register Mod
-register_mod "samsung-sdi-driver" "Samsung SDI Integration" "v1.1.0" "https://github.com/drurew/samsung-sdi-victron-integration" "${INSTALL_DIR}/samsung_sdi_bms_service.py"
+register_mod "samsung-sdi-driver" "Samsung SDI Integration" "v1.1.0" "https://github.com/drurew/samsung-sdi-victron-integration" "${INSTALL_DIR}"
 
 echo "---------------------------------------------------"
 echo "Installation Complete!"
