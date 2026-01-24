@@ -68,8 +68,62 @@ class SamsungSDIMonitor:
         self.sdi_client = sdi_client
         self.dbus_service: Optional[VeDbusService] = None
         self.last_update = 0
-        self.last_update = 0
         self.firmware_updater = None
+        
+        # Soft-Start Logic
+        self.start_time = time.time()
+        self.SOFT_START_DURATION = 15.0 # Seconds to ramp up current
+
+        # Limits (Hardcoded for ELPM482-00005 generic, should be in config)
+        self.MAX_VOLTAGE = 58.1
+        self.MIN_VOLTAGE = 40.0
+        self.MAX_CURRENT = 96.0 # 100A Nominal
+    
+    def _calculate_dvcc_limits(self, voltage: float, temperature: float, soc: float) -> dict:
+        """
+        Calculate Dynamic Voltage and Current Control (DVCC) limits
+        Based on community best practices for NMC modules (Temperature & Voltage tapering).
+        Ref: https://www.reddit.com/r/SolarDIY/comments/1cb2g4q/samsung_sdi_484kw_battery
+        """
+        # 1. Base Limit
+        ccl = self.MAX_CURRENT
+        dcl = self.MAX_CURRENT
+        cvl = self.MAX_VOLTAGE
+
+        # 2. Temperature Derating (Safety)
+        if temperature < 0:
+            ccl = 0 # No charge below freezing
+            dcl = self.MAX_CURRENT * 0.5
+        elif temperature < 10:
+            ccl = self.MAX_CURRENT * 0.1 # 10% Charge between 0-10C
+        elif temperature > 45:
+            # Linear derating from 45C (100%) to 55C (0%)
+            factor = max(0, 1 - (temperature - 45) / 10)
+            ccl *= factor
+            dcl *= factor
+
+        # 3. Voltage Tapering (Balancing)
+        # As we approach Max Voltage, reduce current to allow balancer to work
+        # Start tapering 0.5V before max
+        taper_start = self.MAX_VOLTAGE - 0.5
+        if voltage > taper_start:
+            # Linear reduction from 100A to 5A
+            factor = max(0.05, 1 - (voltage - taper_start) / 0.5) 
+            ccl = min(ccl, self.MAX_CURRENT * factor)
+
+        # 4. Soft Start (Inrush Protection)
+        # Ramp up from 0 to Target over SOFT_START_DURATION
+        uptime = time.time() - self.start_time
+        if uptime < self.SOFT_START_DURATION:
+            factor = uptime / self.SOFT_START_DURATION
+            ccl *= factor
+            dcl *= factor
+        
+        return {
+            'ccl': round(ccl, 1),
+            'dcl': round(dcl, 1),
+            'cvl': cvl
+        }
 
     def setup_dbus(self) -> bool:
         """Initialize D-Bus service for Samsung SDI system"""
@@ -159,15 +213,26 @@ class SamsungSDIMonitor:
     def update(self) -> bool:
         """Update Samsung SDI system data"""
         try:
-            # Read system data from CAN bus
+            # 1. Send Heartbeat (KeepAlive) to BMS
+            # Required to keep Samsung SDI modules active
+            self.sdi_client.send_heartbeat()
+
+            # 2. Read system data from CAN bus
+            # Note: get_voltage() now returns None if data is stale (>5s)
             voltage = self.sdi_client.get_voltage()
             current = self.sdi_client.get_current()
             soc = self.sdi_client.get_soc()
             temperature = self.sdi_client.get_temperature()
 
+            # Safety Check: If any critical data is missing (stale), do not update DBus
+            # This causes Dbus values to timeout/turn invalid on the GUI, preventing false readings.
             if voltage is None or current is None or soc is None:
-                logger.warning(f"System {self.system_id}: Incomplete data received")
+                if time.time() - self.last_update > 5:
+                    logger.warning(f"System {self.system_id}: Stale/Missing data. Watchdog active.")
                 return False
+
+            # 3. Calculate Limits (DVCC)
+            limits = self._calculate_dvcc_limits(voltage, float(temperature) if temperature else 25.0, soc)
 
             # Create data dict for D-Bus update
             system_data = {
@@ -176,6 +241,7 @@ class SamsungSDIMonitor:
                 'soc': soc,
                 'temperature': temperature
             }
+            system_data.update(limits)
 
             # Update D-Bus
             if self.dbus_service:
@@ -214,23 +280,26 @@ class SamsungSDIMonitor:
                 consumed = capacity * (100 - system_data['soc']) / 100
                 self.dbus_service['/ConsumedAmphours'] = consumed
 
-            if 'cycles' in bms_data:
-                self.dbus_service['/History/ChargeCycles'] = int(bms_data['cycles'])
+            # Update Limits (DVCC) if calculated
+            if 'ccl' in system_data:
+                self.dbus_service['/Info/MaxChargeCurrent'] = system_data['ccl']
+            if 'dcl' in system_data:
+                self.dbus_service['/Info/MaxDischargeCurrent'] = system_data['dcl']
+            if 'cvl' in system_data:
+                self.dbus_service['/Info/MaxChargeVoltage'] = system_data['cvl']
 
-            if 'ah_since_eq' in bms_data:
-                self.dbus_service['/History/TotalAhDrawn'] = bms_data['ah_since_eq']
+            # Alarms
+            if 'alarms' in system_data:
+                 # Process bitmask if available
+                 pass
 
-            # Set static values
-            self.dbus_service['/Info/BatteryLowVoltage'] = float(self.config['Battery']['battery_low_voltage'])
-            self.dbus_service['/Info/MaxChargeCurrent'] = float(self.config['Battery']['max_charge_current'])
-            self.dbus_service['/Info/MaxDischargeCurrent'] = float(self.config['Battery']['max_discharge_current'])
-
-            logger.debug(f"Node {self.node_id}: V={bms_data.get('voltage', 0):.2f}V, "
-                        f"I={bms_data.get('current', 0):.2f}A, "
-                        f"SOC={bms_data.get('soc', 0):.1f}%")
+            logger.debug(f"System {self.system_id}: V={system_data.get('voltage', 0):.2f}V, "
+                        f"I={system_data.get('current', 0):.2f}A, "
+                        f"SOC={system_data.get('soc', 0):.1f}%, "
+                        f"CCL={system_data.get('ccl')}A")
 
         except Exception as e:
-            logger.error(f"Node {self.node_id}: D-Bus update error: {e}")
+            logger.error(f"System {self.system_id}: D-Bus update error: {e}")
 
 
 class SamsungSDIAggregatorService:

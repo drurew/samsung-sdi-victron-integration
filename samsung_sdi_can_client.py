@@ -107,6 +107,25 @@ class SamsungSDICANClient:
         if self.bus:
             self.bus.shutdown()
 
+    def send_heartbeat(self):
+        """
+        Send a heartbeat/wakeup frame to the BMS.
+        Samsung SDI modules often sleep without this.
+        ID: 0x180 (Common Wakeup)
+        """
+        if not self.bus: return
+        try:
+            # Standard Wakeup: 8 bytes, usually all zeros or specific pattern
+            # Credit: Community analysis of ELPM482 wakeup behavior
+            msg = can.Message(
+                arbitration_id=0x180,
+                data=[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                is_extended_id=False
+            )
+            self.bus.send(msg)
+        except can.CanError as e:
+            logger.debug(f"Failed to send heartbeat: {e}")
+
     def _parse_can_message(self, message: can.Message) -> Dict[str, Any]:
         """Parse a CAN message according to Samsung SDI specification"""
         if message.arbitration_id not in self.CAN_MESSAGES:
@@ -149,10 +168,17 @@ class SamsungSDICANClient:
         with self.data_lock:
             current_time = time.time()
 
+            # Safety Watchdog: If no data for >5 seconds, clear cache to avoid "Frozen Data"
+            # This prevents the system from charging a disconnected or silent battery
+            if current_time - self.last_update > 5.0:
+                if self.battery_data:
+                    logger.warning("CAN Watchdog: Data STALE (No updates for >5s). Clearing cache.")
+                    self.battery_data = {}
+
             # Only update if it's been more than 100ms since last update
             if current_time - self.last_update < 0.1:
                 return self.battery_data.copy()
-
+            
             try:
                 # Read messages with timeout
                 messages = []
@@ -166,12 +192,15 @@ class SamsungSDICANClient:
                         break
 
                 # Parse messages
+                updated = False
                 for msg in messages:
                     parsed = self._parse_can_message(msg)
                     if parsed:
                         self.battery_data.update(parsed)
+                        updated = True
 
-                self.last_update = current_time
+                if updated:
+                    self.last_update = current_time
 
             except Exception as e:
                 logger.error(f"Error reading CAN messages: {e}")
