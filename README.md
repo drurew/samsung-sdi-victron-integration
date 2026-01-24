@@ -5,6 +5,27 @@
 
 A complete Victron Venus OS integration for Samsung SDI ELPM482-00005 lithium-ion battery modules. Seamlessly integrates Samsung SDI battery systems with Victron Energy equipment including MultiPlus, Cerbo GX, and other Venus OS devices.
 
+## Project Lineage & Credits
+
+This project builds upon the excellent foundational work of the open-source community. It is an evolution of earlier drivers, engineered for higher safety and ease of use.
+
+*   **Protocol Logic**: Derived from **[ploys/dbus-samsung-sdi](https://github.com/ploys/dbus-samsung-sdi)**. The pioneers who reverse-engineered the CAN IDs (0x500-0x504).
+*   **Safety Logic**: Inspired by **[Louisvdw/dbus-serialbattery](https://github.com/Louisvdw/dbus-serialbattery)**. We adapted their best-in-class DVCC temperature derating and voltage tapering algorithms for specific use with Samsung SDI modules.
+
+### Why Choose This Driver?
+
+We have focused on **Stability, Safety, and Ease of Install**.
+
+| Feature | This Driver | Generic / Older Drivers |
+| :--- | :---: | :---: |
+| **Safety Watchdog** | ✅ **Active** (Disconnects if CAN signal lost >5s) | ❌ Risk of "Frozen Values" |
+| **BMS Keep-Alive** | ✅ **Auto-Heartbeat** (Prevents sleep mode) | ⚠️ Often Manual / Missing |
+| **Inrush Protection** | ✅ **Soft-Start Ramp** (0-100% over 15s) | ❌ Hard ON (Trips Breakers) |
+| **Cold Weather** | ✅ **Smart Derating** (Stops charge <0°C) | ⚠️ Manual Config Only |
+| **Control Jitter** | ✅ **Hysteresis** (Smooths fan/relay noise) | ❌ Constant Flux (49A-50A-49A) |
+| **Installation** | ✅ **"Blind Install"** (USB Plug & Play) | ❌ SSH / Command Line |
+| **Updates** | ✅ **Persist-on-Update** (Survives Firmware) | ❌ Re-install required |
+
 ## Quick Start
 
 **For complete installation instructions, see [INSTALL.md](docs/INSTALL.md)**
