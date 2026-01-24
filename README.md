@@ -9,15 +9,20 @@ A complete Victron Venus OS integration for Samsung SDI ELPM482-00005 lithium-io
 
 **For complete installation instructions, see [INSTALL.md](docs/INSTALL.md)**
 
-### Method 1: SetupHelper (Package Manager) - Recommended
-1.  **Online Install**: Add the repository URL to SetupHelper and install from the menu.
-2.  **Offline/USB Install (Windows/Mac/Linux)**:
-    *   Download the verified release package (`samsung-sdi-victron-integration-vX.X.X.tar.gz`) from the **[GitHub Releases](https://github.com/drurew/samsung-sdi-victron-integration/releases)** page.
-    *   **DO NOT EXTRACT** the file. Copy the `.tar.gz` file directly to a USB stick.
-    *   Insert into Cerbo GX and install via SetupHelper's "Install from USB/Storage" option.
-    *   *(Advanced Users)*: You can also build it yourself using `./create_package.sh` on Linux/Mac.
+### Method 1: Automatic "Blind Install" (USB/SD Card)
+This is the easiest method. It uses the built-in Victron auto-install mechanism.
 
-### Method 2: Manual Install
+1.  Download the **`venus-data.tar.gz`** file from the Releases page.
+    *   *Note: If you build it yourself, `create_package.sh` now outputs this filename.*
+2.  **DO NOT EXTRACT IT.** Copy the file exactly as-is to the **root** of a USB stick or SD card.
+    *   Ensure the filename is exactly `venus-data.tar.gz`.
+3.  Insert the media into your Victron GX device (Cerbo/VenusGX).
+4.  **Reboot the device.**
+5.  On boot, the system will automatically unpack the files to `/data` and run the installer.
+6.  Check `/var/log/samsung_install.log` if you need to debug.
+
+### Method 2: Manual Install (SSH)
+If you prefer to see what's happening:
 
 ```bash
 # 1. Download/Clone this repository
