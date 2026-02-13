@@ -160,6 +160,10 @@ python3 diagnose_charging.py
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
+## Acknowledgments
+
+Special thanks to @eda, @nickdb, and @Zappitydoodah for their valuable feedback, involvement, and helpful sharing throughout the development and troubleshooting process. Your contributions are much appreciated!
+
 ##  License
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
