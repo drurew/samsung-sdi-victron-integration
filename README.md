@@ -37,7 +37,8 @@ chmod +x setup
 - ** CAN Communication**: Direct CAN 2.0A communication at 500kbps with Samsung SDI modules
 - ** Real-time Monitoring**: System voltage, current, SOC, SOH, temperature, and alarm status
 - ** Intelligent Aggregation**: Battery aggregator module for MultiPlus ESS compatibility
-- ** Smart Charging**: Respects Samsung SDI charge/discharge limits and MultiPlus capabilities
+- ** Smart Charging**: Linear Current Limiting based on cell voltage and temperature to prevent BMS trips.
+- ** Enhanced Safety**: Watchdog timer disconnects battery if CAN communication is lost.
 - ** D-Bus Integration**: Full Victron D-Bus service implementation
 - ** ESS Compatible**: Optimized for Energy Storage System operation
 - ** Easy Configuration**: Simple INI file configuration

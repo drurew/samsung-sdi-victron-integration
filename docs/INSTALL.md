@@ -215,6 +215,32 @@ dbus -y com.victronenergy.battery.samsung_sdi_system1 /Dc/0/Current
    - Go to **Settings** → **Remote Console**
    - Enable VRM connection for remote monitoring
 
+## ⚙️ Configuration
+
+The system is configured via `/data/samsung-sdi/config.ini`. The default configuration is suitable for most setups, but you can adjust safety limits and aggregation settings.
+
+### Key Settings
+
+**[CAN]**
+- `timeout_seconds = 10`: The watchdog timer. If no CAN data is received for this many seconds, the battery is marked offline.
+
+**[Battery]**
+- `cell_voltage_throttle_start = 4.10`: Voltage at which charge current starts reducing (Linear Limiting).
+- `cell_voltage_throttle_end = 3.20`: Voltage at which discharge current starts reducing.
+- `max_charge_current = 50.0`: Hard safety limit for charging.
+
+**[Aggregation]**
+- `multiplus_min_power = 1200.0`: Sets the minimum discharge reserve.
+
+*Edit the config file:*
+```bash
+nano /data/samsung-sdi/config.ini
+```
+*Restart the service after changes:*
+```bash
+svc -t /service/samsung-sdi-bms
+```
+
 ## 🔍 Testing and Validation
 
 ### Run Diagnostic Script
