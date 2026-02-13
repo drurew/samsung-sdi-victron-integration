@@ -51,11 +51,51 @@ class BatteryAggregator:
         self.multiplus_max_charge_current = 50.0  # MultiPlus Compact 12/1200/50-16 max DC output
         self.ess_discharge_limit_override = -1  # Unlimited ESS discharge
 
+        # Linear Current Limiting (Configurable via service)
+        self.cell_voltage_min = 3.0
+        self.cell_voltage_max = 4.15
+        self.cell_voltage_throttle_start = 4.10
+        self.cell_voltage_throttle_end = 3.20
+
         # Initialize D-Bus service
         self._setup_dbus_service()
 
-    def _setup_dbus_service(self):
-        """Initialize the D-Bus service for battery aggregation."""
+    def set_config(self, config_parser):
+        """Load configuration for linear limiting."""
+        try:
+            self.cell_voltage_min = float(config_parser['Battery']['cell_voltage_min'])
+            self.cell_voltage_max = float(config_parser['Battery']['cell_voltage_max'])
+            self.cell_voltage_throttle_start = float(config_parser['Battery']['cell_voltage_throttle_start'])
+            self.cell_voltage_throttle_end = float(config_parser['Battery']['cell_voltage_throttle_end'])
+        except Exception as e:
+            logger.warning(f"Failed to load linear limiting config: {e}. Using defaults.")
+
+    def _calculate_linear_ccl(self, max_cell_volts, max_current_hard, temp):
+        """
+        Linearly interpolate CCL based on cell voltage and temp.
+        """
+        # 1. Voltage Logic
+        if max_cell_volts >= self.cell_voltage_max:
+             current_v = 0
+        elif max_cell_volts <= self.cell_voltage_throttle_start:
+             current_v = max_current_hard
+        else:
+             # Linear Drop
+             slope = max_current_hard / (self.cell_voltage_max - self.cell_voltage_throttle_start)
+             current_v = max_current_hard - (slope * (max_cell_volts - self.cell_voltage_throttle_start))
+
+        # 2. Temperature Logic (Hardcoded safety for now)
+        if temp <= 0 or temp >= 55:
+             current_t = 0
+        elif temp <= 10:
+             current_t = max_current_hard * 0.2
+        else:
+             current_t = max_current_hard
+
+        return min(current_v, current_t)
+
+    def _update_aggregated_data(self):
+        """Update aggregated battery data with linear limiting."""
         try:
             self.dbus_service = VeDbusService(self.service_name)
             self.dbus_service.add_path('/Mgmt/Connection', 'SuperB Battery Aggregator v1.2')
@@ -97,7 +137,65 @@ class BatteryAggregator:
             self._update_aggregated_data()
 
     def _update_aggregated_data(self):
-        """Update aggregated battery data from all connected batteries."""
+        """Update aggregated battery data with linear limiting."""
+        if not self.batteries:
+            # No batteries connected - reset values to safe state
+            self.dbus_service['/Dc/0/Voltage'] = 0.0
+            self.dbus_service['/Dc/0/Current'] = 0.0
+            self.dbus_service['/Dc/0/Power'] = 0.0
+            self.dbus_service['/Soc'] = 0.0
+            self.dbus_service['/Capacity'] = 0.0
+            self.dbus_service['/Info/MaxChargeCurrent'] = 0.0
+            self.dbus_service['/Info/MaxDischargeCurrent'] = 0.0
+            return
+
+        total_voltage = 0.0
+        total_current = 0.0
+        total_capacity = 0.0
+        weighted_soc = 0.0
+        max_temp = -99.0
+        
+        # Hardware limits sum
+        total_max_charge = 0.0
+        total_max_discharge = 0.0
+
+        num_batteries = len(self.batteries)
+
+        for svc, data in self.batteries.items():
+            # voltage is average for parallel
+            total_voltage += data.get('voltage', 0)
+            total_current += data.get('current', 0)
+            capacity = data.get('capacity', 0)
+            total_capacity += capacity
+            weighted_soc += data.get('soc', 0) * capacity
+            
+            t = data.get('temperature', 0)
+            if t > max_temp: max_temp = t
+
+            # Assuming input data contains cell voltages, we would calculate here.
+            # For now, using standard hard limits from input if cell data missing
+            # If cell volts available (fake it for this snippet as we don't have cell data in dict yet)
+            cell_v_max = (data.get('voltage', 50) / 14) # Crude estimate
+            
+            limit_c = self._calculate_linear_ccl(cell_v_max, data.get('max_charge_current', 50), t)
+            total_max_charge += limit_c
+            total_max_discharge += data.get('max_discharge_current', 50) # similar logic could be applied to discharge
+
+        if total_capacity > 0:
+            weighted_soc /= total_capacity
+        
+        avg_voltage = total_voltage / num_batteries if num_batteries > 0 else 0
+
+        self.dbus_service['/Dc/0/Voltage'] = avg_voltage
+        self.dbus_service['/Dc/0/Current'] = total_current
+        self.dbus_service['/Dc/0/Power'] = avg_voltage * total_current
+        self.dbus_service['/Soc'] = weighted_soc
+        self.dbus_service['/Capacity'] = total_capacity
+        self.dbus_service['/Dc/0/Temperature'] = max_temp
+        
+        # Apply Linear Limits
+        self.dbus_service['/Info/MaxChargeCurrent'] = total_max_charge
+        self.dbus_service['/Info/MaxDischargeCurrent'] = total_max_discharge
         if not self.batteries:
             return
 

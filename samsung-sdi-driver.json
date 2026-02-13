@@ -1,0 +1,7 @@
+{
+  "name": "Samsung SDI Battery Driver",
+  "id": "samsung-sdi-victron",
+  "version": "1.2.0",
+  "description": "Native integration for Samsung SDI ELPM482 modules via CAN",
+  "github": "https://github.com/drurew/samsung-sdi-victron-integration"
+}

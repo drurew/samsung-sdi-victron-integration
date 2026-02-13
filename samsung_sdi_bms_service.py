@@ -68,73 +68,8 @@ class SamsungSDIMonitor:
         self.sdi_client = sdi_client
         self.dbus_service: Optional[VeDbusService] = None
         self.last_update = 0
+        self.last_update = 0
         self.firmware_updater = None
-        
-        # Soft-Start Logic
-        self.start_time = time.time()
-        self.SOFT_START_DURATION = 15.0 # Seconds to ramp up current
-
-        # Limits (Hardcoded for ELPM482-00005 generic, should be in config)
-        self.MAX_VOLTAGE = 58.1
-        self.MIN_VOLTAGE = 40.0
-        self.MAX_CURRENT = 96.0 # 100A Nominal
-
-        # Hysteresis memory
-        self._last_ccl = 0
-        self._last_dcl = 0
-    
-    def _apply_hysteresis(self, old_val, new_val, threshold=1.0):
-        """Prevents jitter (fan ramping) by ignoring small changes."""
-        if old_val is None: return new_val
-        if abs(new_val - old_val) < threshold:
-            return old_val
-        return new_val
-
-    def _calculate_dvcc_limits(self, voltage: float, temperature: float, soc: float) -> dict:
-        """
-        Calculate Dynamic Voltage and Current Control (DVCC) limits
-        Based on community best practices for NMC modules (Temperature & Voltage tapering).
-        Ref: https://www.reddit.com/r/SolarDIY/comments/1cb2g4q/samsung_sdi_484kw_battery
-        """
-        # 1. Base Limit
-        ccl = self.MAX_CURRENT
-        dcl = self.MAX_CURRENT
-        cvl = self.MAX_VOLTAGE
-
-        # 2. Temperature Derating (Safety)
-        if temperature < 0:
-            ccl = 0 # No charge below freezing
-            dcl = self.MAX_CURRENT * 0.5
-        elif temperature < 10:
-            ccl = self.MAX_CURRENT * 0.1 # 10% Charge between 0-10C
-        elif temperature > 45:
-            # Linear derating from 45C (100%) to 55C (0%)
-            factor = max(0, 1 - (temperature - 45) / 10)
-            ccl *= factor
-            dcl *= factor
-
-        # 3. Voltage Tapering (Balancing)
-        # As we approach Max Voltage, reduce current to allow balancer to work
-        # Start tapering 0.5V before max
-        taper_start = self.MAX_VOLTAGE - 0.5
-        if voltage > taper_start:
-            # Linear reduction from 100A to 5A
-            factor = max(0.05, 1 - (voltage - taper_start) / 0.5) 
-            ccl = min(ccl, self.MAX_CURRENT * factor)
-
-        # 4. Soft Start (Inrush Protection)
-        # Ramp up from 0 to Target over SOFT_START_DURATION
-        uptime = time.time() - self.start_time
-        if uptime < self.SOFT_START_DURATION:
-            factor = uptime / self.SOFT_START_DURATION
-            ccl *= factor
-            dcl *= factor
-        
-        return {
-            'ccl': round(ccl, 1),
-            'dcl': round(dcl, 1),
-            'cvl': cvl
-        }
 
     def setup_dbus(self) -> bool:
         """Initialize D-Bus service for Samsung SDI system"""
@@ -214,43 +149,25 @@ class SamsungSDIMonitor:
             self.dbus_service.add_path('/Alarms/HighTemperature', 0, writeable=False)
             self.dbus_service.add_path('/Alarms/LowTemperature', 0, writeable=False)
 
-            logger.info(f"Node {self.node_id}: D-Bus service initialized ({service_name})")
+            logger.info(f"Node {self.system_id}: D-Bus service initialized ({service_name})")
             return True
 
         except Exception as e:
-            logger.error(f"Node {self.node_id}: Failed to initialize D-Bus service: {e}")
+            logger.error(f"Node {self.system_id}: Failed to initialize D-Bus service: {e}")
             return False
 
     def update(self) -> bool:
         """Update Samsung SDI system data"""
         try:
-            # 1. Send Heartbeat (KeepAlive) to BMS
-            # Required to keep Samsung SDI modules active
-            self.sdi_client.send_heartbeat()
-
-            # 2. Read system data from CAN bus
-            # Note: get_voltage() now returns None if data is stale (>5s)
+            # Read system data from CAN bus
             voltage = self.sdi_client.get_voltage()
             current = self.sdi_client.get_current()
             soc = self.sdi_client.get_soc()
             temperature = self.sdi_client.get_temperature()
 
-            # Safety Check: If any critical data is missing (stale), do not update DBus
-            # This causes Dbus values to timeout/turn invalid on the GUI, preventing false readings.
             if voltage is None or current is None or soc is None:
-                if time.time() - self.last_update > 5:
-                    logger.warning(f"System {self.system_id}: Stale/Missing data. Watchdog active.")
+                logger.warning(f"System {self.system_id}: Incomplete data received")
                 return False
-
-            # 3. Calculate Limits (DVCC)
-            limits = self._calculate_dvcc_limits(voltage, float(temperature) if temperature else 25.0, soc)
-
-            # Apply Hysteresis to prevent inverter hunting/fan cycling
-            limits['ccl'] = self._apply_hysteresis(self._last_ccl, limits['ccl'])
-            limits['dcl'] = self._apply_hysteresis(self._last_dcl, limits['dcl'])
-            
-            self._last_ccl = limits['ccl']
-            self._last_dcl = limits['dcl']
 
             # Create data dict for D-Bus update
             system_data = {
@@ -259,7 +176,6 @@ class SamsungSDIMonitor:
                 'soc': soc,
                 'temperature': temperature
             }
-            system_data.update(limits)
 
             # Update D-Bus
             if self.dbus_service:
@@ -298,26 +214,23 @@ class SamsungSDIMonitor:
                 consumed = capacity * (100 - system_data['soc']) / 100
                 self.dbus_service['/ConsumedAmphours'] = consumed
 
-            # Update Limits (DVCC) if calculated
-            if 'ccl' in system_data:
-                self.dbus_service['/Info/MaxChargeCurrent'] = system_data['ccl']
-            if 'dcl' in system_data:
-                self.dbus_service['/Info/MaxDischargeCurrent'] = system_data['dcl']
-            if 'cvl' in system_data:
-                self.dbus_service['/Info/MaxChargeVoltage'] = system_data['cvl']
+            if 'cycles' in system_data:
+                self.dbus_service['/History/ChargeCycles'] = int(system_data['cycles'])
 
-            # Alarms
-            if 'alarms' in system_data:
-                 # Process bitmask if available
-                 pass
+            if 'ah_since_eq' in system_data:
+                self.dbus_service['/History/TotalAhDrawn'] = system_data['ah_since_eq']
 
-            logger.debug(f"System {self.system_id}: V={system_data.get('voltage', 0):.2f}V, "
+            # Set static values
+            self.dbus_service['/Info/BatteryLowVoltage'] = float(self.config['Battery']['battery_low_voltage'])
+            self.dbus_service['/Info/MaxChargeCurrent'] = float(self.config['Battery']['max_charge_current'])
+            self.dbus_service['/Info/MaxDischargeCurrent'] = float(self.config['Battery']['max_discharge_current'])
+
+            logger.debug(f"Node {self.system_id}: V={system_data.get('voltage', 0):.2f}V, "
                         f"I={system_data.get('current', 0):.2f}A, "
-                        f"SOC={system_data.get('soc', 0):.1f}%, "
-                        f"CCL={system_data.get('ccl')}A")
+                        f"SOC={system_data.get('soc', 0):.1f}%")
 
         except Exception as e:
-            logger.error(f"System {self.system_id}: D-Bus update error: {e}")
+            logger.error(f"Node {self.system_id}: D-Bus update error: {e}")
 
 
 class SamsungSDIAggregatorService:
@@ -385,9 +298,10 @@ class SamsungSDIAggregatorService:
     def setup_sdi(self) -> bool:
         """Initialize Samsung SDI CAN client"""
         can_interface = self.config['CAN']['interface']
+        can_timeout = int(self.config['CAN'].get('timeout_seconds', 10))
 
         try:
-            self.sdi_client = SamsungSDICANClient(can_interface)
+            self.sdi_client = SamsungSDICANClient(can_interface, timeout=can_timeout)
             logger.info(f"Initialized Samsung SDI CAN client on {can_interface}")
         except Exception as e:
             logger.error(f"Failed to initialize Samsung SDI CAN client: {e}")
@@ -426,6 +340,9 @@ class SamsungSDIAggregatorService:
             aggregator_service_name = f"com.victronenergy.battery.superb_aggregated"
             self.battery_aggregator = BatteryAggregator(aggregator_service_name)
 
+            # Pass config to aggregator for linear limiting
+            self.battery_aggregator.set_config(self.config)
+
             # Configure MultiPlus minimum discharge power
             self.battery_aggregator.multiplus_min_power = self.multiplus_min_power
 
@@ -463,6 +380,11 @@ class SamsungSDIAggregatorService:
                 # Update aggregator with Samsung SDI system data
                 service_name = f"com.victronenergy.battery.samsung_sdi_system{self.systems[0].system_id}"
                 self.battery_aggregator.add_battery(service_name, system_data)
+            else:
+                # Remove battery if data is invalid/timeout
+                service_name = f"com.victronenergy.battery.samsung_sdi_system{self.systems[0].system_id}"
+                self.battery_aggregator.remove_battery(service_name)
+                logger.warning(f"System {self.systems[0].system_id}: Removed from aggregation due to missing data")
 
             # The battery_aggregator module handles the D-Bus publishing internally
             return True
@@ -484,7 +406,7 @@ class SamsungSDIAggregatorService:
         """Periodic update callback"""
         try:
             # Update individual batteries
-            for battery in self.batteries:
+            for battery in self.systems:
                 battery.update()
 
             # Update aggregator
@@ -531,8 +453,8 @@ class SamsungSDIAggregatorService:
         logger.info("Cleaning up...")
         self.running = False
 
-        if self.canopen_client:
-            self.canopen_client.disconnect()
+        if self.sdi_client:
+            self.sdi_client.disconnect()
 
 
 def main():
@@ -543,7 +465,7 @@ def main():
     parser.add_argument('--bitrate', type=int, default=250000, help='CAN bitrate')
     parser.add_argument('--log-file', default='/var/log/superb-bms.log', help='Log file path')
     parser.add_argument('config', nargs='?', default='/data/superb-bms/config.ini', help='Config file path')
-    args = argparse.parse_args()
+    args = parser.parse_args()
 
     # Setup logging
     log_handlers = [logging.StreamHandler()]

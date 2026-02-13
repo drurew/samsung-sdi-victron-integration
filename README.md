@@ -1,54 +1,24 @@
 # Samsung SDI Victron Integration
 
+[![Latest Release](https://img.shields.io/github/v/release/drurew/samsung-sdi-victron-integration?style=for-the-badge&label=Download%20Package&color=green)](https://github.com/drurew/samsung-sdi-victron-integration/releases/latest)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 
 A complete Victron Venus OS integration for Samsung SDI ELPM482-00005 lithium-ion battery modules. Seamlessly integrates Samsung SDI battery systems with Victron Energy equipment including MultiPlus, Cerbo GX, and other Venus OS devices.
 
-## Project Lineage
-
-This driver was originally forked from the **Super-B Victron Integration** project and adapted for the Samsung SDI ELPM482-00005 based on factory specifications.
-
-As the project evolved, we have integrated advanced logic from the open-source community to improve safety and performance:
-
-*   **Protocol Logic**: Originally implemented from Samsung SDI factory datasheets.
-*   **Safety Enhancements**: We have since adopted best-in-class safety algorithms (DVCC, Temperature Derating) inspired by **[Louisvdw/dbus-serialbattery](https://github.com/Louisvdw/dbus-serialbattery)**.
-*   **Community Validation**: Protocol details validated against findings from **[ploys/dbus-samsung-sdi](https://github.com/ploys/dbus-samsung-sdi)**.
-
-### Why Choose This Driver?
-
-We have focused on **Stability, Safety, and Ease of Install**.
-
-| Feature | This Driver | Generic / Older Drivers |
-| :--- | :---: | :---: |
-| **Safety Watchdog** | ✅ **Active** (Disconnects if CAN signal lost >5s) | ❌ Risk of "Frozen Values" |
-| **BMS Keep-Alive** | ✅ **Auto-Heartbeat** (Prevents sleep mode) | ⚠️ Often Manual / Missing |
-| **Inrush Protection** | ✅ **Soft-Start Ramp** (0-100% over 15s) | ❌ Hard ON (Trips Breakers) |
-| **Cold Weather** | ✅ **Smart Derating** (Stops charge <0°C) | ⚠️ Manual Config Only |
-| **Control Jitter** | ✅ **Hysteresis** (Smooths fan/relay noise) | ❌ Constant Flux (49A-50A-49A) |
-| **Installation** | ✅ **"Blind Install"** (USB Plug & Play) | ❌ SSH / Command Line |
-| **Updates** | ✅ **Persist-on-Update** (Survives Firmware) | ❌ Re-install required |
-
 ## Quick Start
 
 **For complete installation instructions, see [INSTALL.md](docs/INSTALL.md)**
 
-### Method 1: Automatic "Blind Install" (USB/SD Card)
-**This is the intended and recommended installation method.** It utilizes the built-in Victron auto-install mechanism to deploy the driver without needing SSH access.
+### Method 1: SetupHelper (Package Manager) - Recommended
+1.  **Online Install**: Add the repository URL to SetupHelper and install from the menu.
+2.  **Offline/USB Install (Windows/Mac/Linux)**:
+    *   Download the verified release package (`samsung-sdi-victron-integration-vX.X.X.tar.gz`) from the **[GitHub Releases](https://github.com/drurew/samsung-sdi-victron-integration/releases)** page (or the "Actions" tab for latest builds).
+    *   Copy the `.tar.gz` file to a USB stick.
+    *   Insert into Cerbo GX and install via SetupHelper's "Install from USB/Storage" option.
+    *   *(Advanced Users)*: You can also build it yourself using `./create_package.sh` on Linux/Mac.
 
-> **⚠️ Work in Progress**: This "Blind Install" feature is currently in beta. While designed to be the primary installation method, please verify operation after reboot.
-
-1.  Download the **`venus-data.tar.gz`** file from the Releases page.
-    *   *Note: If you build it yourself, `create_package.sh` now outputs this filename.*
-2.  **DO NOT EXTRACT IT.** Copy the file exactly as-is to the **root** of a USB stick or SD card.
-    *   Ensure the filename is exactly `venus-data.tar.gz`.
-3.  Insert the media into your Victron GX device (Cerbo/VenusGX).
-4.  **Reboot the device.**
-5.  On boot, the system will automatically unpack the files to `/data` and run the installer.
-6.  Check `/var/log/samsung_install.log` if you need to debug.
-
-### Method 2: Manual Install (SSH)
-If you prefer to see what's happening:
+### Method 2: Manual Install
 
 ```bash
 # 1. Download/Clone this repository
@@ -74,6 +44,17 @@ chmod +x setup
 - ** Monitoring Tools**: Built-in diagnostic and monitoring scripts
 
 ## Hardware Requirements
+
+**CRITICAL: CAN Cable Pinout**
+The Samsung SDI battery and Victron Cerbo GX use **different** pinouts for CAN communication. **You cannot use a standard Ethernet cable.** You must create a custom crossover cable:
+
+| Signal | Samsung SDI (CN7/CN8) | Cerbo GX (VE.Can) |
+|--------|-----------------------|-------------------|
+| CAN-H  | Pin 1                 | Pin 7             |
+| CAN-L  | Pin 2                 | Pin 8             |
+| GND    | Pin 3                 | Pin 3             |
+
+**Failure to use this cable will result in zero communication (RX=0 errors).**
 
 - **Samsung SDI ELPM482-00005**: 4.84kWh lithium-ion battery module
 - **Victron Cerbo GX or Venus GX**: Venus OS platform (v2.8x+)
@@ -124,8 +105,6 @@ samsung-sdi-victron-integration/
 ```
 
 ## Configuration
-
-assure you use the correct interface. vecan0, can0 etc. 
 
 Edit `config.ini` to match your setup:
 
