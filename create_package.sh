@@ -1,7 +1,7 @@
 #!/bin/bash
 # generic create_package.sh
 PACKAGE_NAME="samsung-sdi-victron-integration"
-VERSION="v1.1.0"
+VERSION="v1.2.0"
 OUTPUT_FILE="$PACKAGE_NAME-$VERSION.tar.gz"
 
 echo "Creating package $OUTPUT_FILE..."
