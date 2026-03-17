@@ -129,6 +129,10 @@ class SamsungSDIMonitor:
             self.dbus_service.add_path('/System/NrOfModulesOffline', 0)
             self.dbus_service.add_path('/System/NrOfModulesBlockingCharge', 0)
             self.dbus_service.add_path('/System/NrOfModulesBlockingDischarge', 0)
+            self.dbus_service.add_path('/System/MinCellVoltage', None, writeable=False)
+            self.dbus_service.add_path('/System/MaxCellVoltage', None, writeable=False)
+            self.dbus_service.add_path('/System/MinCellTemperature', None, writeable=False)
+            self.dbus_service.add_path('/System/MaxCellTemperature', None, writeable=False)
 
             # History
             self.dbus_service.add_path('/History/ChargeCycles', None, writeable=False)
@@ -164,6 +168,12 @@ class SamsungSDIMonitor:
             current = self.sdi_client.get_current()
             soc = self.sdi_client.get_soc()
             temperature = self.sdi_client.get_temperature()
+            min_cell_voltage = self.sdi_client.get_min_cell_voltage()
+            max_cell_voltage = self.sdi_client.get_max_cell_voltage()
+            min_cell_temperature = self.sdi_client.get_min_cell_temperature()
+            max_cell_temperature = self.sdi_client.get_max_cell_temperature()
+            charge_current_limit = self.sdi_client.get_charge_current_limit()
+            discharge_current_limit = self.sdi_client.get_discharge_current_limit()
 
             if voltage is None or current is None or soc is None:
                 logger.warning(f"System {self.system_id}: Incomplete data received")
@@ -174,7 +184,13 @@ class SamsungSDIMonitor:
                 'voltage': voltage,
                 'current': current,
                 'soc': soc,
-                'temperature': temperature
+                'temperature': temperature,
+                'min_cell_voltage': min_cell_voltage,
+                'max_cell_voltage': max_cell_voltage,
+                'min_cell_temperature': min_cell_temperature,
+                'max_cell_temperature': max_cell_temperature,
+                'charge_current_limit': charge_current_limit,
+                'discharge_current_limit': discharge_current_limit
             }
 
             # Update D-Bus
@@ -220,10 +236,26 @@ class SamsungSDIMonitor:
             if 'ah_since_eq' in system_data:
                 self.dbus_service['/History/TotalAhDrawn'] = system_data['ah_since_eq']
 
-            # Set static values
-            self.dbus_service['/Info/BatteryLowVoltage'] = float(self.config['Battery']['battery_low_voltage'])
-            self.dbus_service['/Info/MaxChargeCurrent'] = float(self.config['Battery']['max_charge_current'])
-            self.dbus_service['/Info/MaxDischargeCurrent'] = float(self.config['Battery']['max_discharge_current'])
+            # Set current limits from CAN data or config as fallback
+            charge_limit = system_data.get('charge_current_limit')
+            if charge_limit is None:
+                charge_limit = float(self.config['Battery']['max_charge_current'])
+            self.dbus_service['/Info/MaxChargeCurrent'] = charge_limit
+
+            discharge_limit = system_data.get('discharge_current_limit')
+            if discharge_limit is None:
+                discharge_limit = float(self.config['Battery']['max_discharge_current'])
+            self.dbus_service['/Info/MaxDischargeCurrent'] = discharge_limit
+
+            # Update cell voltage and temperature data
+            if 'min_cell_voltage' in system_data and system_data['min_cell_voltage'] is not None:
+                self.dbus_service['/System/MinCellVoltage'] = system_data['min_cell_voltage']
+            if 'max_cell_voltage' in system_data and system_data['max_cell_voltage'] is not None:
+                self.dbus_service['/System/MaxCellVoltage'] = system_data['max_cell_voltage']
+            if 'min_cell_temperature' in system_data and system_data['min_cell_temperature'] is not None:
+                self.dbus_service['/System/MinCellTemperature'] = system_data['min_cell_temperature']
+            if 'max_cell_temperature' in system_data and system_data['max_cell_temperature'] is not None:
+                self.dbus_service['/System/MaxCellTemperature'] = system_data['max_cell_temperature']
 
             logger.debug(f"Node {self.system_id}: V={system_data.get('voltage', 0):.2f}V, "
                         f"I={system_data.get('current', 0):.2f}A, "
@@ -267,7 +299,7 @@ class SamsungSDIAggregatorService:
 
         # Battery settings - Samsung SDI 4.84kWh module
         config['Battery'] = {
-            'capacity': '4840.0',  # 4.84kWh
+            'capacity': '94.0',  # 94Ah (4.84kWh / ~51.5V nominal)
             'number_of_cells': '14',  # Based on spec
             'battery_low_voltage': '40.0',  # Approximate for 14S system
             'max_charge_current': '50.0',  # Samsung SDI typical limit

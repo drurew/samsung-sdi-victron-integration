@@ -58,9 +58,14 @@ fi
 
 # Install Python dependencies
 echo "Installing Python dependencies..."
-pip3 install --quiet python-can dbus-python pygobject3 || {
-    echo "Warning: Some Python packages may not have installed correctly"
-    echo "You may need to install them manually: pip3 install python-can dbus-python pygobject3"
+opkg update
+opkg install python3-can python3-dbus python3-pip || {
+    echo "Warning: Some opkg packages may not have installed correctly"
+    echo "Trying pip3 install as fallback..."
+    pip3 install --quiet python-can dbus-python pygobject3 || {
+        echo "Warning: Some Python packages may not have installed correctly"
+        echo "You may need to install them manually: opkg install python3-can python3-dbus"
+    }
 }
 
 # Set permissions

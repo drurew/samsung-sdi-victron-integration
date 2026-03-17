@@ -70,32 +70,8 @@ class BatteryAggregator:
         except Exception as e:
             logger.warning(f"Failed to load linear limiting config: {e}. Using defaults.")
 
-    def _calculate_linear_ccl(self, max_cell_volts, max_current_hard, temp):
-        """
-        Linearly interpolate CCL based on cell voltage and temp.
-        """
-        # 1. Voltage Logic
-        if max_cell_volts >= self.cell_voltage_max:
-             current_v = 0
-        elif max_cell_volts <= self.cell_voltage_throttle_start:
-             current_v = max_current_hard
-        else:
-             # Linear Drop
-             slope = max_current_hard / (self.cell_voltage_max - self.cell_voltage_throttle_start)
-             current_v = max_current_hard - (slope * (max_cell_volts - self.cell_voltage_throttle_start))
-
-        # 2. Temperature Logic (Hardcoded safety for now)
-        if temp <= 0 or temp >= 55:
-             current_t = 0
-        elif temp <= 10:
-             current_t = max_current_hard * 0.2
-        else:
-             current_t = max_current_hard
-
-        return min(current_v, current_t)
-
-    def _update_aggregated_data(self):
-        """Update aggregated battery data with linear limiting."""
+    def _setup_dbus_service(self):
+        """Initialize the D-Bus service."""
         try:
             self.dbus_service = VeDbusService(self.service_name)
             self.dbus_service.add_path('/Mgmt/Connection', 'SuperB Battery Aggregator v1.2')

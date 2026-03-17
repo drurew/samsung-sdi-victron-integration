@@ -71,9 +71,9 @@ class SamsungSDICANClient:
                 'avg_cell_voltage': {'byte_offset': 0, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Average cell voltage in all tray'},
                 'max_cell_voltage': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Maximum cell voltage in all tray'},
                 'min_cell_voltage': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Minimum cell voltage in all tray'},
-                'avg_tray_voltage': {'byte_offset': 0, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Average tray voltage in all tray'},
-                'max_tray_voltage': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Maximum tray voltage in all tray'},
-                'min_tray_voltage': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Minimum tray voltage in all tray'},
+                'avg_tray_voltage': {'byte_offset': 6, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Average tray voltage in all tray'},
+                'max_tray_voltage': {'byte_offset': 8, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Maximum tray voltage in all tray'},
+                'min_tray_voltage': {'byte_offset': 10, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Minimum tray voltage in all tray'},
             }
         ),
         0x504: CANMessageDefinition(
@@ -107,6 +107,13 @@ class SamsungSDICANClient:
     def __del__(self):
         if self.bus:
             self.bus.shutdown()
+
+    def disconnect(self):
+        """Disconnect from CAN bus"""
+        if self.bus:
+            self.bus.shutdown()
+            self.bus = None
+            logger.info(f"Disconnected from CAN bus {self.can_interface}")
 
     def _parse_can_message(self, message: can.Message) -> Dict[str, Any]:
         """Parse a CAN message according to Samsung SDI specification"""
@@ -228,19 +235,25 @@ class SamsungSDICANClient:
         data = self.read_battery_data()
         return data.get('alarm_status')
 
-    def get_protection_status(self) -> Optional[int]:
-        """Get protection status bitfield"""
+    def get_min_cell_voltage(self) -> Optional[float]:
+        """Get minimum cell voltage"""
         data = self.read_battery_data()
-        return data.get('protection_status')
+        return data.get('min_cell_voltage')
 
-    def get_tray_counts(self) -> Tuple[Optional[int], Optional[int], Optional[int]]:
-        """Get tray counts (total, normal, fault)"""
+    def get_max_cell_voltage(self) -> Optional[float]:
+        """Get maximum cell voltage"""
         data = self.read_battery_data()
-        return (
-            data.get('total_trays'),
-            data.get('normal_trays'),
-            data.get('fault_trays')
-        )
+        return data.get('max_cell_voltage')
+
+    def get_min_cell_temperature(self) -> Optional[float]:
+        """Get minimum cell temperature"""
+        data = self.read_battery_data()
+        return data.get('min_cell_temp')
+
+    def get_max_cell_temperature(self) -> Optional[float]:
+        """Get maximum cell temperature"""
+        data = self.read_battery_data()
+        return data.get('max_cell_temp')
 
     def is_connected(self) -> bool:
         """Check if CAN bus is connected and receiving data"""

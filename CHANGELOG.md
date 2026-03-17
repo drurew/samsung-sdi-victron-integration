@@ -2,6 +2,19 @@
 
 All notable changes to the Samsung SDI Victron Integration project will be documented in this file.
 
+## [1.2.1] - 2026-03-17
+
+### Fixed
+- **BatteryAggregator startup crash** (#8): Fixed `AttributeError: 'BatteryAggregator' object has no attribute '_setup_dbus_service'` by properly implementing the D-Bus service initialization method.
+- **Cleanup method error** (#11): Added missing `disconnect()` method to `SamsungSDICANClient` to prevent `AttributeError` on shutdown.
+- **Wrong capacity units** (#12): Changed battery capacity from 4840.0 Wh to 94.0 Ah to match Victron D-Bus specification requirements.
+- **Missing cell data** (#13): Added `/System/MinCellVoltage`, `/System/MaxCellVoltage`, `/System/MinCellTemperature`, `/System/MaxCellTemperature` D-Bus paths and implemented data collection from CAN messages 0x503 and 0x504.
+- **Hardcoded current limits** (#10): Implemented dynamic charge/discharge current limits using temperature-adjusted values from CAN message 0x502 instead of hardcoded config values.
+- **CAN protocol conflict** (#4): Fixed overlapping byte offsets in CAN message 0x503 definition for cell vs tray voltage fields.
+- **Dependency installation** (#5): Updated `install.sh` to use `opkg install python3-can` for reliable dependency installation on Venus OS.
+
+## [1.2.0] - 2026-01-22
+
 ## [1.2.0] - 2026-01-22
 
 ### Added
