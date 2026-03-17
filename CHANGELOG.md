@@ -13,6 +13,9 @@ All notable changes to the Samsung SDI Victron Integration project will be docum
 - **CAN protocol conflict** (#4): Fixed overlapping byte offsets in CAN message 0x503 definition for cell vs tray voltage fields.
 - **Dependency installation** (#5): Updated `install.sh` to use `opkg install python3-can` for reliable dependency installation on Venus OS.
 
+### Improved
+- **Dynamic VE.Bus Discovery** (#6, #7): Implemented automatic detection of VE.Bus service names in `diagnose_charging.py` instead of hardcoding `com.victronenergy.vebus.ttyS4`. Now works across different hardware configurations (Cerbo GX, Raspberry Pi, USB, CAN).
+
 ## [1.2.0] - 2026-01-22
 
 ## [1.2.0] - 2026-01-22

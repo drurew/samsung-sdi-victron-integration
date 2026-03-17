@@ -24,9 +24,47 @@ def check_service_value(service, path):
     cmd = f"dbus -y {service} {path} GetValue"
     return run_dbus_command(cmd)
 
+def find_vebus_service():
+    """Find the VE.Bus service name dynamically."""
+    # Try common VE.Bus service names
+    common_services = [
+        "com.victronenergy.vebus.ttyS4",  # Cerbo GX serial
+        "com.victronenergy.vebus.ttyS5",  # Alternative serial
+        "com.victronenergy.vebus.ttyUSB0",  # USB
+        "com.victronenergy.vebus.ttyUSB1",  # USB alternative
+        "com.victronenergy.vebus.can0",  # CAN bus
+        "com.victronenergy.vebus.vecan0"   # VE.Can
+    ]
+    
+    # First try to list all D-Bus services and find VE.Bus ones
+    try:
+        cmd = "dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            services = result.stdout
+            vebus_services = [line.strip() for line in services.split('\n') if 'com.victronenergy.vebus.' in line and not line.startswith('   ')]
+            if vebus_services:
+                return vebus_services[0].strip('"')  # Return first VE.Bus service found
+    except Exception:
+        pass
+    
+    # Fallback: try common service names
+    for service in common_services:
+        # Test if service exists by trying to get a path
+        test_result = check_service_value(service, "/ProductName")
+        if not test_result.startswith("ERROR") and not test_result.startswith("EXCEPTION"):
+            return service
+    
+    # Last resort: return the most common one
+    return "com.victronenergy.vebus.ttyS4"
+
 def main():
     print("🔍 Samsung SDI MultiPlus Charging Diagnostic")
     print("=" * 50)
+
+    # Find VE.Bus service dynamically
+    vebus_service = find_vebus_service()
+    print(f"🔗 Using VE.Bus service: {vebus_service}")
 
     # Check battery aggregator status
     print("\n📊 Battery Aggregator Status:")
@@ -47,10 +85,10 @@ def main():
 
     # Check MultiPlus status
     print("\n⚡ MultiPlus Status:")
-    multiplus_soc = check_service_value("com.victronenergy.vebus.ttyS4", "/Soc")
-    multiplus_charge_current = check_service_value("com.victronenergy.vebus.ttyS4", "/Dc/0/MaxChargeCurrent")
-    multiplus_ac_input = check_service_value("com.victronenergy.vebus.ttyS4", "/Ac/ActiveIn/L1/I")
-    multiplus_dc_current = check_service_value("com.victronenergy.vebus.ttyS4", "/Dc/0/Current")
+    multiplus_soc = check_service_value(vebus_service, "/Soc")
+    multiplus_charge_current = check_service_value(vebus_service, "/Dc/0/MaxChargeCurrent")
+    multiplus_ac_input = check_service_value(vebus_service, "/Ac/ActiveIn/L1/I")
+    multiplus_dc_current = check_service_value(vebus_service, "/Dc/0/Current")
     print(f"  MultiPlus SOC: {multiplus_soc}")
     print(f"  MultiPlus MaxChargeCurrent: {multiplus_charge_current}A")
     print(f"  AC Input Current: {multiplus_ac_input}A")
