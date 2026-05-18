@@ -1,49 +1,33 @@
 # Changelog
 
-All notable changes to the Samsung SDI Victron Integration project will be documented in this file.
-
-## [1.2.1] - 2026-03-17
-
-### Fixed
-- **BatteryAggregator startup crash** (#8): Fixed `AttributeError: 'BatteryAggregator' object has no attribute '_setup_dbus_service'` by properly implementing the D-Bus service initialization method.
-- **Cleanup method error** (#11): Added missing `disconnect()` method to `SamsungSDICANClient` to prevent `AttributeError` on shutdown.
-- **Wrong capacity units** (#12): Changed battery capacity from 4840.0 Wh to 94.0 Ah to match Victron D-Bus specification requirements.
-- **Missing cell data** (#13): Added `/System/MinCellVoltage`, `/System/MaxCellVoltage`, `/System/MinCellTemperature`, `/System/MaxCellTemperature` D-Bus paths and implemented data collection from CAN messages 0x503 and 0x504.
-- **Hardcoded current limits** (#10): Implemented dynamic charge/discharge current limits using temperature-adjusted values from CAN message 0x502 instead of hardcoded config values.
-- **CAN protocol conflict** (#4): Fixed overlapping byte offsets in CAN message 0x503 definition for cell vs tray voltage fields.
-- **Dependency installation** (#5): Updated `install.sh` to use `opkg install python3-can` for reliable dependency installation on Venus OS.
-
-### Improved
-- **Dynamic VE.Bus Discovery** (#6, #7): Implemented automatic detection of VE.Bus service names in `diagnose_charging.py` instead of hardcoding `com.victronenergy.vebus.ttyS4`. Now works across different hardware configurations (Cerbo GX, Raspberry Pi, USB, CAN).
-
-## [1.2.0] - 2026-01-22
-
-## [1.2.0] - 2026-01-22
+## [2.0.0] - 2026-05-18
 
 ### Added
-- **Safety Watchdog**: Implemented strict CAN bus monitoring. Data is cleared if communication is lost for more than configured timeout (default 10s).
-- **Linear Current Limiting**: Implemented smooth current reduction based on cell voltage and temperature to prevent BMS tripping at high/low SOC.
-- **Dynamic Configuration**: All safety thresholds and timeouts are now configurable via `config.ini`.
-- **Fail-Safe Aggregation**: Aggregator now reports 0V/0A/0% SOC if all batteries are lost/timed out, preventing stale data persistence.
-- **VRM Manifest**: Added `samsung-sdi-driver.json` for easier identification in VRM.
+- **C driver** (`src/samsung-sdi-bms.c`): Native driver linking against libc only.
+  Listens for PDO broadcasts from Samsung SDI BMS. 10 KB binary, 1 MB RSS,
+  near-zero CPU. Zero runtime dependencies.
+- **Protocol verification**: All CAN message fields verified against Samsung
+  SDI Product Specification ELPM482-00005 Rev 0.2. Little-endian extraction,
+  correct scaling factors, and alarm bit mapping confirmed.
+- **Makefile** for native compilation on Cerbo GX.
+- **Installation guide** (`docs/INSTALL.md`) with daemontools service setup.
 
 ### Changed
-- Refactored `SamsungSDICANClient` to better handle timeouts and connection status.
-- Updated `BatteryAggregator` to interpolate charge limits linearly.
+- **Repository restructured**: C driver in `src/`, documentation in `docs/`,
+  scripts in `scripts/`. Python reference driver retained in `src/`.
+- **D-Bus service name**: Simplified to `com.victronenergy.battery.samsung_sdi`
+  for single-system use.
 
-## [1.1.0] - 2026-01-21
+### Fixed
+- **Cell voltage parser**: Removed out-of-bounds reads at offsets 8 and 10
+  (max_tray_voltage, min_tray_voltage). These fields are defined in the Samsung
+  spec but exceed the 8-byte CAN 2.0A frame; they are available on per-cell
+  CAN IDs 0x510-0x55C.
+- **Alarm bit 7**: Correctly mapped to Victron `CellImbalance` alarm path
+  (Tray Voltage Imbalance per Samsung spec).
+
+## [1.x] - 2025-2026
 
 ### Added
-- **SetupHelper Integration**: Full support for Kwindrem's Package Manager (SetupHelper).
-- **Universal Setup Script**: New `setup` script handling install/uninstall/reinstall logic locally.
-- **CI/CD**: Added GitHub Actions workflow to automatically build release packages.
-- **Packaging**: Added `create_package.sh` for manual package creation.
-- **Documentation**: Updated installation guide for USB/Offline and Package Manager methods.
-
-## [1.0.0] - 2025-12-28
-
-### Added
-- Initial release.
-- CAN 2.0A communication with Samsung SDI modules.
-- D-Bus integration for Victron Venus OS.
-- Basic aggregation logic.
+- Initial Python driver with CAN communication, D-Bus publishing, battery
+  aggregation, and diagnostic tools.
