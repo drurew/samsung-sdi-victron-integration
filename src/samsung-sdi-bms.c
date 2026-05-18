@@ -9,9 +9,11 @@
  * CAN:       CAN 2.0A, 500 kbps, little-endian
  * D-Bus:     com.victronenergy.battery.samsung_sdi
  *
- * Compile:   gcc -Os -s -std=c99 -Wall -lm -o samsung-sdi-bms samsung-sdi-bms.c
+ * Compile:   arm-linux-gnueabihf-gcc -Os -s -std=c99 -D_GNU_SOURCE -Wall -lm -o samsung-sdi-bms samsung-sdi-bms.c
  * Run:       ./samsung-sdi-bms <can-interface>
  */
+
+#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
