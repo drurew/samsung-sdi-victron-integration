@@ -72,6 +72,8 @@ values to D-Bus. No polling requests are sent to the battery.
 
 All values are little-endian. CAN 2.0A, 11-bit identifiers, 500 kbps.
 
+Full protocol specification: [Samsung SDI ELPM482-00005 Rev 0.2](https://community.victronenergy.com/uploads/short-url/9VfS5ZSnYrAdr0OrmR3sh8O4xjk.pdf)
+
 ## Hardware Setup
 
 The Samsung SDI battery and Victron Cerbo GX use different CAN pinouts.
