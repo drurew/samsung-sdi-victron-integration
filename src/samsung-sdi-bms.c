@@ -122,7 +122,8 @@ typedef struct {
     unsigned char total_trays;
     unsigned char normal_trays;
     unsigned char fault_trays;
-    unsigned char alarm_status;
+    unsigned int  alarm_status;      /* 0x501 bytes 0-1 */
+    unsigned int  protection_status; /* 0x501 bytes 2-3 */
     unsigned int  heartbeat;
     time_t last_update;
 } battery_state;
@@ -144,12 +145,14 @@ static void parse_status(const unsigned char *data) {
     battery.soc      = (double)data[4];
     battery.soh      = (double)data[5];
     battery.heartbeat = u16_le(data, 6);
-
-    /* Alarm status: byte 0, bits 0-7 */
-    battery.alarm_status = data[0];
 }
 
 static void parse_config(const unsigned char *data) {
+    /* Spec Rev 0.2 Table 8: 0x501 bytes 0-1 = System Alarm Status,
+     * bytes 2-3 = System Protection Status. (0x500 bytes 0/2, used
+     * previously, are the voltage low byte and current.) */
+    battery.alarm_status      = u16_le(data, 0);
+    battery.protection_status = u16_le(data, 2);
     battery.total_trays  = data[4];
     battery.normal_trays = data[5];
     battery.fault_trays  = data[6];
@@ -225,23 +228,32 @@ static void publish_all(void) {
      * bit3=Under-Temperature, bit4=Charge Over-Current,
      * bit5=Discharge Over-Current, bit6=FET Over-Temperature,
      * bit7=Tray Voltage Imbalance */
+    /* Victron severity: 0 = OK, 1 = warning, 2 = alarm.
+     * Samsung alarm bits (BMS warning, FETs closed) -> 1;
+     * protection bits (BMS has acted) -> 2 on the same category. */
     int alarm;
-    alarm = (battery.alarm_status & 0x01) ? 2 : 0; /* High Voltage */
+#define SDI_SEV(bit) ((battery.protection_status & (bit)) ? 2 : \
+                      (battery.alarm_status      & (bit)) ? 1 : 0)
+    alarm = SDI_SEV(0x0001); /* Over-Voltage */
     dbus_emit_property("/", "Alarms", "HighVoltage", 'i', &alarm);
-    alarm = (battery.alarm_status & 0x02) ? 2 : 0; /* Low Voltage */
+    alarm = SDI_SEV(0x0002); /* Under-Voltage */
+    if (battery.protection_status & 0x1000) alarm = 2; /* UV shutdown */
     dbus_emit_property("/", "Alarms", "LowVoltage", 'i', &alarm);
-    alarm = (battery.alarm_status & 0x04) ? 2 : 0; /* High Temperature */
+    alarm = SDI_SEV(0x0004); /* Over-Temperature */
     dbus_emit_property("/", "Alarms", "HighTemperature", 'i', &alarm);
-    alarm = (battery.alarm_status & 0x08) ? 2 : 0; /* Low Temperature */
+    alarm = SDI_SEV(0x0008); /* Under-Temperature */
     dbus_emit_property("/", "Alarms", "LowTemperature", 'i', &alarm);
-    alarm = (battery.alarm_status & 0x10) ? 2 : 0; /* High Charge Current */
+    alarm = SDI_SEV(0x0010); /* Charge Over-Current */
     dbus_emit_property("/", "Alarms", "HighChargeCurrent", 'i', &alarm);
-    alarm = (battery.alarm_status & 0x20) ? 2 : 0; /* High Discharge Current */
+    alarm = SDI_SEV(0x0020); /* Discharge Over-Current */
     dbus_emit_property("/", "Alarms", "HighDischargeCurrent", 'i', &alarm);
-    alarm = (battery.alarm_status & 0x40) ? 2 : 0; /* FET Over-Temp */
+    alarm = SDI_SEV(0x0040); /* FET Over-Temperature */
+    if (battery.protection_status & 0x7F00) alarm = 2; /* hi-byte prot. */
     dbus_emit_property("/", "Alarms", "InternalFailure", 'i', &alarm);
-    alarm = (battery.alarm_status & 0x80) ? 2 : 0; /* Tray Voltage Imbalance */
+    alarm = SDI_SEV(0x0080); /* Tray Voltage Imbalance */
+    if (battery.protection_status & 0x2000) alarm = 2; /* cell imbal. */
     dbus_emit_property("/", "Alarms", "CellImbalance", 'i', &alarm);
+#undef SDI_SEV
 }
 
 /* ─── CAN open/read ───────────────────────────────────────────────────── */
