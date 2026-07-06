@@ -76,17 +76,79 @@ class SamsungSDICANClient:
                 'max_cell_voltage': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Maximum cell voltage in all tray'},
                 'min_cell_voltage': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Minimum cell voltage in all tray'},
                 'avg_tray_voltage': {'byte_offset': 6, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Average tray voltage in all tray'},
-                'max_tray_voltage': {'byte_offset': 8, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Maximum tray voltage in all tray'},
-                'min_tray_voltage': {'byte_offset': 10, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Minimum tray voltage in all tray'},
             }
         ),
         0x504: CANMessageDefinition(
             can_id=0x504,
             name="Temperature Summary",
             fields={
+                # Spec Rev 0.2 Table 8: max/min tray voltage are bytes 0-3
+                # of 0x504 (previously mis-filed at offsets 8/10 of 0x503,
+                # which exceed the 8-byte CAN 2.0A frame).
+                'max_tray_voltage': {'byte_offset': 0, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Maximum tray voltage in all tray'},
+                'min_tray_voltage': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.01, 'unit': 'V', 'description': 'Minimum tray voltage in all tray'},
                 'avg_cell_temp': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'S8', 'scale': 1.0, 'unit': '°C', 'description': 'Average cell temperature in all tray'},
                 'max_cell_temp': {'byte_offset': 5, 'bit_offset': None, 'data_type': 'S8', 'scale': 1.0, 'unit': '°C', 'description': 'Maximum cell temperature in all tray'},
                 'min_cell_temp': {'byte_offset': 6, 'bit_offset': None, 'data_type': 'S8', 'scale': 1.0, 'unit': '°C', 'description': 'Minimum cell temperature in all tray'},
+            }
+        ),
+        0x5F0: CANMessageDefinition(
+            can_id=0x5F0,
+            name="Cell Voltages 1-3",
+            fields={
+                # Byte 0-1 carries the Tray-ID (U16). Single-tray systems
+                # can ignore it; multi-tray cell reporting would need
+                # per-tray keying and is out of scope for this patch.
+                'cell_voltage_01': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #1 voltage'},
+                'cell_voltage_02': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #2 voltage'},
+                'cell_voltage_03': {'byte_offset': 6, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #3 voltage'},
+            }
+        ),
+        0x5F1: CANMessageDefinition(
+            can_id=0x5F1,
+            name="Cell Voltages 4-6",
+            fields={
+                # Byte 0-1 carries the Tray-ID (U16). Single-tray systems
+                # can ignore it; multi-tray cell reporting would need
+                # per-tray keying and is out of scope for this patch.
+                'cell_voltage_04': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #4 voltage'},
+                'cell_voltage_05': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #5 voltage'},
+                'cell_voltage_06': {'byte_offset': 6, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #6 voltage'},
+            }
+        ),
+        0x5F2: CANMessageDefinition(
+            can_id=0x5F2,
+            name="Cell Voltages 7-9",
+            fields={
+                # Byte 0-1 carries the Tray-ID (U16). Single-tray systems
+                # can ignore it; multi-tray cell reporting would need
+                # per-tray keying and is out of scope for this patch.
+                'cell_voltage_07': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #7 voltage'},
+                'cell_voltage_08': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #8 voltage'},
+                'cell_voltage_09': {'byte_offset': 6, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #9 voltage'},
+            }
+        ),
+        0x5F3: CANMessageDefinition(
+            can_id=0x5F3,
+            name="Cell Voltages 10-12",
+            fields={
+                # Byte 0-1 carries the Tray-ID (U16). Single-tray systems
+                # can ignore it; multi-tray cell reporting would need
+                # per-tray keying and is out of scope for this patch.
+                'cell_voltage_10': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #10 voltage'},
+                'cell_voltage_11': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #11 voltage'},
+                'cell_voltage_12': {'byte_offset': 6, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #12 voltage'},
+            }
+        ),
+        0x5F4: CANMessageDefinition(
+            can_id=0x5F4,
+            name="Cell Voltages 13-14",
+            fields={
+                # Byte 0-1 carries the Tray-ID (U16). Single-tray systems
+                # can ignore it; multi-tray cell reporting would need
+                # per-tray keying and is out of scope for this patch.
+                'cell_voltage_13': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #13 voltage'},
+                'cell_voltage_14': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U16', 'scale': 0.001, 'unit': 'V', 'description': 'Cell #14 voltage'},
             }
         ),
     }
@@ -133,6 +195,11 @@ class SamsungSDICANClient:
                 byte_offset = field_info['byte_offset']
                 data_type = field_info['data_type']
                 scale = field_info['scale']
+
+                width = 2 if data_type in ('U16', 'S16') else 1
+                if byte_offset + width > len(data):
+                    # Field lies beyond this frame's DLC — skip silently.
+                    continue
 
                 if data_type == 'U8':
                     raw_value = data[byte_offset]
@@ -263,6 +330,20 @@ class SamsungSDICANClient:
         """Get maximum cell temperature"""
         data = self.read_battery_data()
         return data.get('max_cell_temp')
+
+    def get_cell_voltages(self) -> Dict[int, float]:
+        """Individual cell voltages {cell_number: volts} from 0x5F0-0x5F4.
+
+        Returns an empty dict if the battery firmware does not broadcast
+        the cell frames. Zero readings (unpopulated slots) are omitted.
+        """
+        data = self.read_battery_data()
+        cells = {}
+        for n in range(1, 15):
+            v = data.get('cell_voltage_%02d' % n)
+            if v:
+                cells[n] = v
+        return cells
 
     def is_connected(self) -> bool:
         """Check if CAN bus is connected and receiving data"""
