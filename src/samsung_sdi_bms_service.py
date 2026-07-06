@@ -134,6 +134,13 @@ class SamsungSDIMonitor:
             self.dbus_service.add_path('/System/MinCellTemperature', None, writeable=False)
             self.dbus_service.add_path('/System/MaxCellTemperature', None, writeable=False)
 
+            # Individual cell voltages (0x5F0-0x5F4), dbus-serialbattery
+            # path convention so existing GUI mods display them.
+            for _cell in range(1, 15):
+                self.dbus_service.add_path(f'/Voltages/Cell{_cell}', None, writeable=False)
+            self.dbus_service.add_path('/Voltages/Sum', None, writeable=False)
+            self.dbus_service.add_path('/Voltages/Diff', None, writeable=False)
+
             # History
             self.dbus_service.add_path('/History/ChargeCycles', None, writeable=False)
             self.dbus_service.add_path('/History/TotalAhDrawn', None, writeable=False)
@@ -174,6 +181,7 @@ class SamsungSDIMonitor:
             max_cell_temperature = self.sdi_client.get_max_cell_temperature()
             charge_current_limit = self.sdi_client.get_charge_current_limit()
             discharge_current_limit = self.sdi_client.get_discharge_current_limit()
+            cell_voltages = self.sdi_client.get_cell_voltages()
 
             if voltage is None or current is None or soc is None:
                 logger.warning(f"System {self.system_id}: Incomplete data received")
@@ -190,7 +198,8 @@ class SamsungSDIMonitor:
                 'min_cell_temperature': min_cell_temperature,
                 'max_cell_temperature': max_cell_temperature,
                 'charge_current_limit': charge_current_limit,
-                'discharge_current_limit': discharge_current_limit
+                'discharge_current_limit': discharge_current_limit,
+                'cell_voltages': cell_voltages
             }
 
             # Update D-Bus
@@ -256,6 +265,15 @@ class SamsungSDIMonitor:
                 self.dbus_service['/System/MinCellTemperature'] = system_data['min_cell_temperature']
             if 'max_cell_temperature' in system_data and system_data['max_cell_temperature'] is not None:
                 self.dbus_service['/System/MaxCellTemperature'] = system_data['max_cell_temperature']
+
+            # Publish individual cell voltages (0x5F0-0x5F4)
+            cells = system_data.get('cell_voltages') or {}
+            if cells:
+                for _cell in range(1, 15):
+                    self.dbus_service[f'/Voltages/Cell{_cell}'] = cells.get(_cell)
+                self.dbus_service['/Voltages/Sum'] = round(sum(cells.values()), 3)
+                self.dbus_service['/Voltages/Diff'] = round(
+                    max(cells.values()) - min(cells.values()), 3)
 
             logger.debug(f"Node {self.system_id}: V={system_data.get('voltage', 0):.2f}V, "
                         f"I={system_data.get('current', 0):.2f}A, "
