@@ -1,0 +1,5 @@
+# Map commits to canonical author identities for git shortlog / GitHub contributors graph.
+# XOThermite's first 6 commits carried the wrong GitHub noreply user-id
+# (12345678 → shubh2294) instead of their real id (266242667).  This file
+# reassigns them so the contributor graph reflects actual authorship.
+XOThermite <266242667+XOThermite@users.noreply.github.com> <12345678+yourusername@users.noreply.github.com>
