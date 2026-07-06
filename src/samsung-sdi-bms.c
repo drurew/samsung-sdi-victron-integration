@@ -54,10 +54,15 @@ struct can_frame { canid_t id; unsigned char dlc, __pad; unsigned short __res0; 
 #define SAMSUNG_CELL_x3_3 0x5F3  /* 10-12 */
 #define SAMSUNG_CELL_x3_4 0x5F4  /* 13-14 */
 
-#define VCAN_STATE        0x351  /* Victron CAN-BMS: V, I, temp, SOC, SOH */
-#define VCAN_SOC_SOH      0x355  /* SOC/SOH 0.1% precision */
-#define VCAN_LIMITS       0x356  /* CVL, CCL, DCL, DVL */
-#define VCAN_ALARMS       0x35A  /* Alarm/warning bitfields */
+/* Victron CAN-bus BMS frames, verified against stock driver on Cerbo GX MK2 */
+#define VCAN_LIMITS       0x351  /* CVL 0.1V, CCL 0.1A, DCL 0.1A, DVL 0.1V (all u16) */
+#define VCAN_SOC_SOH      0x355  /* SOC/SOH u16 at 1% */
+#define VCAN_STATE        0x356  /* V 0.01V (s16), I 0.1A (s16), T 0.1°C (s16), 6 bytes */
+#define VCAN_ALARMS       0x35A  /* 2-bit flag pairs: alarms bytes 0-3, warnings bytes 4-7 */
+#define VCAN_NAME         0x35E  /* Product name, 8 ASCII */
+#define VCAN_INFO         0x35F  /* Model tag, protocol rev, capacity (Ah) */
+#define VCAN_MODULES      0x372  /* Online/offline module counts */
+#define VCAN_CELLINFO     0x373  /* Min/max cell mV + temp (Kelvin), feeds GX Details page */
 
 /* ─── Constants ───────────────────────────────────────────────────────── */
 
@@ -152,38 +157,89 @@ static int alarm_sev(unsigned int alarm_bit, unsigned int prot_bit) {
 
 /* ─── Victron CAN-BMS frame builders (--can-bms only) ─────────────────── */
 
+#define CVL_MAX_V  55.4   /* cap CVL at 3.957 V/cell on 14S; BMS broadcasts 58.1 V */
+
 static void vcan_send_all(int can_fd) {
     unsigned char d[8];
-    unsigned short v = (unsigned short)(st.v*100.0+0.5);
-    short          i = (short)(st.i*10.0 + (st.i>=0?0.5:-0.5));
-    unsigned short t = (unsigned short)(st.temp_avg*10.0+0.5);
-    unsigned char  sc = st.soc>100?100:(unsigned char)(st.soc+0.5);
-    unsigned char  sh = st.soh>100?100:(unsigned char)(st.soh+0.5);
-    d[0]=v&0xFF;d[1]=v>>8;d[2]=i&0xFF;d[3]=i>>8;d[4]=t&0xFF;d[5]=t>>8;d[6]=sc;d[7]=sh;
-    can_send(can_fd, VCAN_STATE, d, 8);
+    double cv, cc, dc;
+    short sv, si, stmp;
+    unsigned short uv;
 
-    unsigned short s10 = (unsigned short)(st.soc*10.0+0.5), h10 = (unsigned short)(st.soh*10.0+0.5);
-    d[0]=s10&0xFF;d[1]=s10>>8;d[2]=h10&0xFF;d[3]=h10>>8;d[4]=d[5]=d[6]=d[7]=0xFF;
-    can_send(can_fd, VCAN_SOC_SOH, d, 8);
-
-    unsigned short cvl = (unsigned short)(st.cvl*10.0+0.5), ccl = (unsigned short)(st.ccl*10.0+0.5);
-    unsigned short dcl = (unsigned short)(st.dcl*10.0+0.5), dvl = (unsigned short)(st.dvl*10.0+0.5);
-    d[0]=cvl&0xFF;d[1]=cvl>>8;d[2]=ccl&0xFF;d[3]=ccl>>8;d[4]=dcl&0xFF;d[5]=dcl>>8;d[6]=dvl&0xFF;d[7]=dvl>>8;
+    /* 0x351 — LIMITS: CVL 0.1V, CCL 0.1A, DCL 0.1A, DVL 0.1V (all u16).
+     * Safety: clamp CVL, force CCL=DCL=0 on any protection bit. */
+    cv = st.cvl > CVL_MAX_V ? CVL_MAX_V : st.cvl;
+    cc = st.protect ? 0.0 : st.ccl;
+    dc = st.protect ? 0.0 : st.dcl;
+    uv = (unsigned short)(cv * 10.0 + 0.5);   d[0]=uv&0xFF; d[1]=uv>>8;
+    uv = (unsigned short)(cc * 10.0 + 0.5);   d[2]=uv&0xFF; d[3]=uv>>8;
+    uv = (unsigned short)(dc * 10.0 + 0.5);   d[4]=uv&0xFF; d[5]=uv>>8;
+    uv = (unsigned short)(st.dvl * 10.0 + 0.5); d[6]=uv&0xFF; d[7]=uv>>8;
     can_send(can_fd, VCAN_LIMITS, d, 8);
 
-    unsigned short al=0, wa=0;
-    unsigned int a=st.alarm, p=st.protect;
-    /* bit0 over-v, bit1 under-v, bit2 over-t, bit3 under-t, bit4 chg-oc, bit5 dis-oc, bit6 internal, bit7 imbalance */
-    if(p&0x0001) al|=0x01; else if(a&0x0001) wa|=0x01; if(p&0x4000) al|=0x01;
-    if(p&0x0002) al|=0x02; else if(a&0x0002) wa|=0x02; if(p&0x1000) al|=0x02;
-    if(p&0x0004) al|=0x04; else if(a&0x0004) wa|=0x04;
-    if(p&0x0008) al|=0x08; else if(a&0x0008) wa|=0x08;
-    if(p&0x0010) al|=0x10; else if(a&0x0010) wa|=0x10;
-    if(p&0x0020) al|=0x20; else if(a&0x0020) wa|=0x20;
-    if(p&(0x0040|0x0100|0x0200|0x0400|0x0800)) al|=0x40; else if(a&0x0040) wa|=0x40;
-    if(p&0x2000) al|=0x80; else if(a&0x0080) wa|=0x80;
-    d[0]=al&0xFF;d[1]=al>>8;d[2]=wa&0xFF;d[3]=wa>>8;d[4]=d[5]=d[6]=d[7]=0;
+    /* 0x355 — SOC/SOH: u16 at 1% (NOT 0.1%) */
+    uv = st.soc > 100 ? 100 : (unsigned short)(st.soc + 0.5);  d[0]=uv&0xFF; d[1]=uv>>8;
+    uv = st.soh > 100 ? 100 : (unsigned short)(st.soh + 0.5);  d[2]=uv&0xFF; d[3]=uv>>8;
+    d[4]=d[5]=d[6]=d[7]=0;
+    can_send(can_fd, VCAN_SOC_SOH, d, 8);
+
+    /* 0x356 — STATE: V (s16, 0.01V), I (s16, 0.1A), T (s16, 0.1°C). 6 bytes. */
+    sv   = (short)(st.v * 100.0 + (st.v >= 0 ? 0.5 : -0.5));     d[0]=sv&0xFF; d[1]=sv>>8;
+    si   = (short)(st.i * 10.0  + (st.i >= 0 ? 0.5 : -0.5));     d[2]=si&0xFF; d[3]=si>>8;
+    stmp = (short)(st.temp_avg * 10.0 + (st.temp_avg >= 0 ? 0.5 : -0.5)); d[4]=stmp&0xFF; d[5]=stmp>>8;
+    d[6]=d[7]=0;
+    can_send(can_fd, VCAN_STATE, d, 6);
+
+    /* 0x35A — 2-bit flag pairs: alarms bytes 0-3, warnings bytes 4-7.
+     * Samsung alarm bits (BMS warning)→Victron warnings. Samsung protection→alarms. */
+    memset(d, 0, 8);
+    unsigned int a = st.alarm, p = st.protect;
+    #define SET(b, f) (d[(b)+((f)>>3)] |= (unsigned char)(0x01 << ((f)&7)))
+    /* warnings from alarm bits */
+    if (a&0x0001) SET(4,2);
+    if (a&0x0002) SET(4,4);
+    if (a&0x0004) SET(4,6);
+    if (a&0x0008) SET(4,8);
+    if (a&0x0010) SET(4,16);
+    if (a&0x0020) SET(4,14);
+    if (a&0x0040) SET(4,22);
+    if (a&0x0080) SET(4,24);
+    /* alarms from protection bits */
+    if (p&0x0001) SET(0,2);
+    if (p&0x4000) SET(0,2);   /* 2nd OV */
+    if (p&0x0002) SET(0,4);
+    if (p&0x1000) SET(0,4);   /* UV shutdown */
+    if (p&0x0004) SET(0,6);
+    if (p&0x0008) SET(0,8);
+    if (p&0x0010) SET(0,16);
+    if (p&0x0020) SET(0,14);
+    if (p&0x0080) SET(0,24);
+    if (p&0x2000) SET(0,24);  /* tray+cell imbalance */
+    if (p&(0x0040|0x0100|0x0200|0x0400|0x0800)) SET(0,22);
+    if (p) SET(0,0);  /* general alarm if any protection active */
+    #undef SET
     can_send(can_fd, VCAN_ALARMS, d, 8);
+
+    /* 0x372 — module counts: online, offline */
+    uv = st.trays_ok;    d[0]=uv&0xFF; d[1]=uv>>8;
+    d[2]=d[3]=0;  d[4]=d[5]=0;
+    uv = st.trays_fault; d[6]=uv&0xFF; d[7]=uv>>8;
+    can_send(can_fd, VCAN_MODULES, d, 8);
+
+    /* 0x373 — min/max cell mV + min/max temp Kelvin (feeds GX Details page) */
+    uv = (unsigned short)(st.cell_v_min * 1000.0 + 0.5);    d[0]=uv&0xFF; d[1]=uv>>8;
+    uv = (unsigned short)(st.cell_v_max * 1000.0 + 0.5);    d[2]=uv&0xFF; d[3]=uv>>8;
+    uv = (unsigned short)(st.temp_min + 273.15);            d[4]=uv&0xFF; d[5]=uv>>8;
+    uv = (unsigned short)(st.temp_max + 273.15);            d[6]=uv&0xFF; d[7]=uv>>8;
+    can_send(can_fd, VCAN_CELLINFO, d, 8);
+
+    /* 0x35E — product name (8 ASCII) */
+    memcpy(d, "SDI 482 ", 8);  can_send(can_fd, VCAN_NAME, d, 8);
+
+    /* 0x35F — model tag 0x0482, spec rev 0.2, capacity Ah */
+    uv = (unsigned short)(CAPACITY_AH + 0.5);
+    d[0]=0x82; d[1]=0x04;  d[2]=0x02; d[3]=0x00;
+    d[4]=uv&0xFF; d[5]=uv>>8;  d[6]=d[7]=0;
+    can_send(can_fd, VCAN_INFO, d, 8);
 }
 
 /* ─── D-Bus path definitions ──────────────────────────────────────────── */

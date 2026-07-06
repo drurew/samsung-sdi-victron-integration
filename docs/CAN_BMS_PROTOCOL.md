@@ -1,14 +1,12 @@
 # Victron CAN-bus BMS Protocol Specification
 
-Community-documented reverse-engineered specification of the Victron CAN-bus
-BMS protocol used by the Venus OS `can-bus-bms` service. This protocol is how
-managed batteries (BYD, Pylontech, Freedomwon, REC, MG Energy Systems, and
-others) communicate with Victron GX devices over CAN at 500 kbps.
+Community-documented specification of the Victron CAN-bus BMS protocol used by
+the Venus OS `can-bus-bms` service. Verified against a stock Cerbo GX MK2
+running Venus OS v3.70 by XOThermite (PR #28).
 
 **Disclaimer:** Victron does not publish this specification publicly. It is
 provided to battery manufacturers on request. This document is based on
-community reverse-engineering and testing against Venus OS v3.70 on a
-Cerbo GX MK2 with an ELPM482-00005 battery.
+live-hardware testing and frame-capture verification.
 
 ## Transport layer
 
@@ -22,97 +20,115 @@ Cerbo GX MK2 with an ELPM482-00005 battery.
 
 ## Frame definitions
 
-### 0x351 -- Battery State
+### 0x351 -- Charge/Discharge Limits
 
-Transmitted by the BMS to the GX device.
-
-| Bytes  | Type  | Scale   | Field              | Notes                 |
-|--------|-------|---------|--------------------|-----------------------|
-| 0-1    | U16   | 0.01    | Battery voltage    | Volts (e.g. 5300 = 53.00 V) |
-| 2-3    | S16   | 0.1     | Battery current    | Amps, positive = charge, negative = discharge |
-| 4-5    | U16   | 0.1     | Temperature        | Degrees Celsius (e.g. 250 = 25.0 C) |
-| 6      | U8    | 1       | State of Charge    | Percent (0-100)       |
-| 7      | U8    | 1       | State of Health    | Percent (0-100)       |
-
-### 0x355 -- Precision SOC / SOH
-
-| Bytes  | Type  | Scale   | Field              | Notes                 |
-|--------|-------|---------|--------------------|-----------------------|
-| 0-1    | U16   | 0.1     | State of Charge    | 0.1% resolution (e.g. 855 = 85.5%) |
-| 2-3    | U16   | 0.1     | State of Health    | 0.1% resolution       |
-| 4-7    | --    | --      | Reserved           | Set to 0xFFFF          |
-
-### 0x356 -- Charge / Discharge Limits
+Limits that DVCC enforces on chargers and inverters. Verified against stock
+Venus OS driver on Cerbo GX MK2 (v3.70): `351 [8] 2A 02 D6 01 D6 01 C0 01`
+displayed on the Parameters page as CVL 55.4 V / CCL 47.0 A.
 
 | Bytes  | Type  | Scale   | Field                     | Notes                 |
 |--------|-------|---------|---------------------------|-----------------------|
-| 0-1    | U16   | 0.1     | Charge Voltage Limit      | Volts (CVL)           |
-| 2-3    | U16   | 0.1     | Charge Current Limit      | Amps (CCL)            |
-| 4-5    | U16   | 0.1     | Discharge Current Limit   | Amps (DCL)            |
-| 6-7    | U16   | 0.1     | Discharge Voltage Limit   | Volts (DVL)           |
+| 0-1    | U16   | 0.1     | Charge Voltage Limit      | V (CVL)               |
+| 2-3    | S16   | 0.1     | Charge Current Limit      | A (CCL)               |
+| 4-5    | S16   | 0.1     | Discharge Current Limit   | A (DCL)               |
+| 6-7    | U16   | 0.1     | Discharge Voltage Limit   | V (DVL)               |
 
-DVCC behavior:
-- CVL = 0 means "do not charge".
-- CCL = 0 means "do not charge" (forces charge current to zero).
-- DCL = 0 means "do not discharge".
-- The GX device enforces these limits through DVCC and will not override them.
+Note: CCL and DCL are signed 16-bit (S16). CVL and DVL are unsigned (U16).
+
+### 0x355 -- SOC / SOH
+
+| Bytes  | Type  | Scale   | Field              | Notes                 |
+|--------|-------|---------|--------------------|-----------------------|
+| 0-1    | U16   | 1       | State of Charge    | % (not 0.1%: verified on hardware) |
+| 2-3    | U16   | 1       | State of Health    | %                     |
+| 4-7    | --    | --      | Reserved           | Set to 0               |
+
+### 0x356 -- Battery State
+
+Live measurements. 6-byte frame (bytes 6-7 unused).
+
+| Bytes  | Type  | Scale   | Field              | Notes                 |
+|--------|-------|---------|--------------------|-----------------------|
+| 0-1    | S16   | 0.01    | Battery voltage    | V (e.g. 4891 = 48.91 V) |
+| 2-3    | S16   | 0.1     | Battery current    | A, positive = charge   |
+| 4-5    | S16   | 0.1     | Temperature        | °C                    |
+| 6-7    | --    | --      | Reserved           | Unused                 |
 
 ### 0x35A -- Alarms and Warnings
 
-| Bytes  | Type  | Field              | Notes                 |
-|--------|-------|--------------------|-----------------------|
-| 0-1    | U16   | Alarm bits         | Severity 2 in Victron convention |
-| 2-3    | U16   | Warning bits       | Severity 1 in Victron convention |
-| 4-7    | --    | Reserved           | Set to 0               |
+Wire format: **2-bit flag pairs** across all 8 bytes. Alarms in bytes 0-3,
+warnings in bytes 4-7. Each pair: `01` = active, `00` = inactive. This is NOT
+a plain bitmask. Verified on live hardware: injecting an over-temperature bit
+with this encoding produced a correctly named "High Temperature" GX notification.
 
-Bitfield layout (identical for alarms and warnings):
+| Flag offset | Condition             | Notes                  |
+|-------------|-----------------------|------------------------|
+| 0           | General alarm         | Set when any protection active |
+| 2           | High voltage          |                        |
+| 4           | Low voltage           |                        |
+| 6           | High temperature      |                        |
+| 8           | Low temperature       |                        |
+| 10          | High charge temperature |                      |
+| 12          | Low charge temperature  |                      |
+| 14          | High discharge current |                       |
+| 16          | High charge current   |                        |
+| 18          | Contactor             |                        |
+| 20          | Short circuit         |                        |
+| 22          | BMS internal failure  |                        |
+| 24          | Cell imbalance        |                        |
 
-| Bit  | Condition             |
-|------|-----------------------|
-| 0    | High voltage          |
-| 1    | Low voltage           |
-| 2    | High temperature      |
-| 3    | Low temperature       |
-| 4    | High charge current   |
-| 5    | High discharge current|
-| 6    | Internal failure      |
-| 7    | Cell imbalance        |
-| 8-15 | Reserved              |
+Severity: alarms (bytes 0-3) = severity 2 in Victron convention. Warnings
+(bytes 4-7) = severity 1.
 
 ### 0x35E -- Battery Name (Venus OS v2.80+)
 
 | Bytes  | Type  | Field              | Notes                 |
 |--------|-------|--------------------|-----------------------|
-| 0-7    | ASCII | Battery name       | Null-terminated, up to 8 characters |
-
-The name is displayed in the Venus OS device list.
+| 0-7    | ASCII | Battery name       | 8 ASCII characters     |
 
 ### 0x35F -- Manufacturer Info (Venus OS v2.80+)
 
 | Bytes  | Type  | Field              | Notes                 |
 |--------|-------|--------------------|-----------------------|
-| 0-3    | ASCII | Manufacturer       | Four-character code   |
-| 4-7    | ASCII | Firmware version   | e.g. "0100" for v1.00 |
+| 0-1    | U16   | Model tag          | e.g. 0x0482            |
+| 2-3    | U16   | Protocol revision  | e.g. 0x0002 for Rev 0.2 |
+| 4-5    | U16   | Capacity           | Ah                     |
+| 6-7    | --    | Reserved           | Set to 0               |
+
+### 0x372 -- Module Counts
+
+| Bytes  | Type  | Field              | Notes                 |
+|--------|-------|--------------------|-----------------------|
+| 0-1    | U16   | Online modules     |                       |
+| 2-3    | U16   | Blocking charge    |                       |
+| 4-5    | U16   | Blocking discharge |                       |
+| 6-7    | U16   | Offline modules    |                       |
+
+### 0x373 -- Cell Info (feeds GX Battery Details page)
+
+| Bytes  | Type  | Field              | Notes                 |
+|--------|-------|--------------------|-----------------------|
+| 0-1    | U16   | Min cell voltage   | mV                    |
+| 2-3    | U16   | Max cell voltage   | mV                    |
+| 4-5    | U16   | Min temperature    | Kelvin                |
+| 6-7    | U16   | Max temperature    | Kelvin                |
 
 ## What this protocol does NOT support
 
-The Victron CAN-BMS protocol was designed for basic managed batteries -- lead-acid
-replacements with internal BMS -- and deliberately omits diagnostics that Victron's
-own batteries do not provide:
+The Victron CAN-BMS protocol was designed for basic managed batteries and
+deliberately omits diagnostics that Victron's own batteries do not provide:
 
-- **Per-cell voltages** -- No frames for individual cell voltage reporting.
-- **Per-cell temperatures** -- No frames for individual cell temperature.
-- **Cell voltage statistics** -- No min/max/avg cell voltage.
-- **Tray/module-level data** -- No tray count, tray voltages, tray faults.
-- **Heartbeat / watchdog** -- No keep-alive counter. The GX device detects BMS
-  loss by frame timeout (no frames for ~5 seconds).
+- **Per-cell individual voltages** -- 0x373 provides min/max cell mV only,
+  not per-cell voltages. The Samsung SDI broadcasts 14 individual cell
+  voltages via 0x5F0-0x5F4; these are only available through the direct
+  D-Bus path (Python driver or `samsung-sdi-bms` default mode).
+- **Tray/module-level detail beyond counts** -- 0x372 provides counts only,
+  no per-tray voltages or faults.
+- **Heartbeat / watchdog** -- No keep-alive counter. The GX device detects
+  BMS loss by frame timeout (~5 seconds).
 - **SOH detail** -- Only a single integer percentage, no cycle count or
-  cumulative Ah.
-
-For batteries that provide this data (such as the Samsung SDI ELPM482-00005),
-the Python reference driver (`samsung_sdi_bms_service.py`) publishes all
-available fields directly to D-Bus using the `velib` library, bypassing the
-CAN-BMS protocol entirely.
+  cumulative Ah (those are D-Bus paths only).
+- **Per-cell temperatures** -- Min/max only, no individual readings.
 
 ## Safety behavior
 
@@ -125,16 +141,36 @@ for approximately 5 seconds:
    (MPPT, MultiPlus) is still available.
 
 This timeout is implemented by the GX device, not by the BMS. The BMS does
-not need to send an explicit watchdog or heartbeat for this to work -- simply
-ceasing transmission during a fault condition is sufficient to halt charging.
+not need to send an explicit watchdog -- ceasing transmission during a fault
+condition is sufficient to halt charging.
+
+## Samsung SDI → Victron alarm mapping
+
+Samsung SDI 0x501 bit positions (spec Rev 0.2 Table 8) to Victron 0x35A flags:
+
+| Samsung bit | Condition             | Victron flag offset | Severity       |
+|-------------|-----------------------|---------------------|----------------|
+| 0           | Over-Voltage          | 2                   | alarm=2/warn=1 |
+| 1           | Under-Voltage         | 4                   | alarm=2/warn=1 |
+| 2           | Over-Temperature      | 6                   | alarm=2/warn=1 |
+| 3           | Under-Temperature     | 8                   | alarm=2/warn=1 |
+| 4           | Charge Over-Current   | 16                  | alarm=2/warn=1 |
+| 5           | Discharge Over-Current| 14                  | alarm=2/warn=1 |
+| 6           | FET Over-Temp         | 22                  | alarm only     |
+| 7           | Tray Voltage Imbalance| 24                  | alarm=2/warn=1 |
+| 8-11        | Various internal      | 22                  | alarm only     |
+| 12          | UV shutdown           | 4                   | alarm only     |
+| 13          | Cell imbalance        | 24                  | alarm only     |
+| 14          | 2nd Over-Voltage      | 2                   | alarm only     |
+
+Samsung alarm bits (BMS warning, FETs still closed) → Victron warnings (bytes 4-7).
+Samsung protection bits (BMS has acted, FETs open) → Victron alarms (bytes 0-3).
 
 ## References
 
-- Victron Battery Compatibility documentation:
-  <https://www.victronenergy.com/live/battery_compatibility:start>
+- Victron Battery Compatibility: <https://www.victronenergy.com/live/battery_compatibility:start>
 - Full D-Bus battery service specification: [DBUS_BATTERY_SPEC.md](DBUS_BATTERY_SPEC.md)
+- Samsung SDI → Victron mapping: [SAMSUNG_TO_VICTRON_MAPPING.md](SAMSUNG_TO_VICTRON_MAPPING.md)
 - Samsung SDI ELPM482-00005 Product Specification Rev 0.2
-- Community CAN-BMS reverse engineering: Victron Community forums,
-  SimpBMS, REC BMS, and Pylontech integration projects.
-- Verified against live Venus OS v3.71 on Cerbo GX with source-level
-  confirmation from `dbus-systemcalc-py` (`dummycanbms.py`, `batteryservice.py`).
+- Verified against Venus OS v3.70 on Cerbo GX MK2 via frame capture and injection
+  testing (PR #28, XOThermite).
