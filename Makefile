@@ -1,10 +1,14 @@
 # Samsung SDI ELPM482-00005 — Victron Cerbo GX Integration
-# Build the C driver (native compilation on Cerbo GX)
+# Build the C driver (Samsung SDI → Victron CAN-BMS protocol translator)
+#
+# The driver translates Samsung SDI CAN PDOs (0x500-0x504, 0x5F0-0x5F4)
+# into Victron CAN-bus BMS frames (0x351, 0x355, 0x356, 0x35A).
+# The stock Venus OS CAN-BMS driver handles D-Bus publishing.
 
 .PHONY: all clean install
 
 CC      := gcc
-CFLAGS  := -Os -s -Wall -Wextra -std=c99
+CFLAGS  := -Os -s -Wall -Wextra -std=c99 -D_GNU_SOURCE
 LDLIBS  := -lm
 TARGET  := samsung-sdi-bms
 SRCDIR  := src

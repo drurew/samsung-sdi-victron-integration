@@ -1,19 +1,51 @@
 /*
- * samsung-sdi-bms.c — Native BMS driver for Samsung SDI ELPM482-00005
+ * samsung-sdi-bms.c — Samsung SDI → Victron CAN-BMS Protocol Translator
  *
- * Listens for PDO broadcasts from the Samsung SDI battery management system
- * and publishes data to the Victron D-Bus. The Samsung SDI BMS broadcasts
- * all data on fixed CAN IDs at 500 kbps; no SDO requests are required.
+ * Translates Samsung SDI ELPM482-00005 CAN PDO broadcasts (0x500-0x504,
+ * 0x5F0-0x5F4) into Victron's standard CAN-bus BMS protocol (0x351,
+ * 0x355, 0x356, 0x35A).  The stock Venus OS CAN-BMS driver picks up
+ * the translated frames and publishes everything to D-Bus — no custom
+ * D-Bus code needed.
  *
- * Protocol: Samsung SDI ELPM482-00005 Product Specification Rev 0.2
- * CAN:       CAN 2.0A, 500 kbps, little-endian
- * D-Bus:     com.victronenergy.battery.samsung_sdi
+ * This avoids the fragile hand-rolled D-Bus wire-protocol layer that
+ * the previous version attempted (issues #15, #22).  A pure CAN-to-CAN
+ * translator is simpler, smaller, and inherits Victron's native BMS-lost
+ * watchdog, reconnect, and GUI integration.
  *
- * Compile:   arm-linux-gnueabihf-gcc -Os -s -std=c99 -D_GNU_SOURCE -Wall -lm -o samsung-sdi-bms samsung-sdi-bms.c
- * Run:       ./samsung-sdi-bms <can-interface>
+ * Protocol references:
+ *   Samsung SDI ELPM482-00005 Product Specification Rev 0.2
+ *   Victron CAN-bus BMS protocol (dbus-callback / can-bus-bms service)
+ *
+ * CAN IDs used (all CAN 2.0A, 500 kbps, little-endian):
+ *   Input (Samsung SDI broadcasts every ~500 ms):
+ *     0x500 — System status  (voltage, current, SOC, SOH, heartbeat)
+ *     0x501 — System config   (alarm/protection bitfields, tray counts)
+ *     0x502 — Charge/discharge limits
+ *     0x503 — Cell voltage summary (avg/max/min cell, avg tray)
+ *     0x504 — Temperature & tray voltage summary
+ *     0x5F0-0x5F4 — Per-cell voltages (14 cells)
+ *   Output (Victron CAN-BMS, sent every ~500 ms on same interface):
+ *     0x351 — Battery state   (V, I, temp, SOC, SOH)
+ *     0x355 — Precision SOC/SOH
+ *     0x356 — Charge/discharge limits
+ *     0x35A — Alarms & warnings
+ *
+ * Usage:
+ *   Compile:  gcc -Os -s -std=c99 -Wall -Wextra -lm -o samsung-sdi-bms \
+ *                    samsung-sdi-bms.c
+ *   ARM:      arm-linux-gnueabihf-gcc -Os -s -std=c99 -Wall -Wextra -lm \
+ *                    -o samsung-sdi-bms samsung-sdi-bms.c
+ *   Run:      ./samsung-sdi-bms <can-interface>
+ *
+ * Venus OS setup:
+ *   1. Install this binary (e.g. /data/samsung-sdi/samsung-sdi-bms)
+ *   2. Ensure the Victron CAN-BMS driver is enabled:
+ *        dbus -y com.victronenergy.settings /Settings/Canbus/can0/Profile SetValue 4
+ *      (Profile 4 = CAN-bus BMS (500 kbit/s))
+ *   3. Run: ./samsung-sdi-bms vecan0
+ *
+ * License: MIT
  */
-
-#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,36 +84,34 @@ struct can_frame {
     unsigned char data[8] __attribute__((aligned(8)));
 };
 
-/* ─── D-Bus wire protocol ────────────────────────────────────────────── */
-
-#define DBUS_SYSTEM_BUS_PATH "/var/run/dbus/system_bus_socket"
-
-static int dbus_fd    = -1;
-static int dbus_serial = 0;
-static volatile sig_atomic_t running = 1;
-
 /* ─── Samsung SDI CAN protocol ────────────────────────────────────────── */
 
-#define SDI_CAN_BITRATE   500000
 #define SDI_CAN_ID_STATUS           0x500
 #define SDI_CAN_ID_CONFIG           0x501
 #define SDI_CAN_ID_LIMITS           0x502
 #define SDI_CAN_ID_CELL_VOLTAGE     0x503
 #define SDI_CAN_ID_TEMPERATURE      0x504
+#define SDI_CAN_ID_CELL_1_3         0x5F0
+#define SDI_CAN_ID_CELL_4_6         0x5F1
+#define SDI_CAN_ID_CELL_7_9         0x5F2
+#define SDI_CAN_ID_CELL_10_12       0x5F3
+#define SDI_CAN_ID_CELL_13_14       0x5F4
 
-/* Data timeout: mark disconnected after 5 seconds without a message */
+/* Victron CAN-BMS protocol ────────────────────────────────────────────── */
+
+#define VC_CAN_ID_STATE             0x351
+#define VC_CAN_ID_SOC_SOH           0x355
+#define VC_CAN_ID_LIMITS            0x356
+#define VC_CAN_ID_ALARMS            0x35A
+
+/* Data timeout: mark disconnected after 5 s without any SDI frame */
 #define DATA_TIMEOUT_SEC  5
 
-/* Battery service name on D-Bus */
-#define DBUS_SERVICE_NAME "com.victronenergy.battery.samsung_sdi"
+/* ─── Forward declarations ────────────────────────────────────────────── */
 
-/* Forward declarations */
-static int can_open(const char *ifname);
-static int can_recv(int fd, struct can_frame *frame, int timeout_ms);
-static int dbus_connect(void);
-static int dbus_request_name(const char *name);
-static int dbus_emit_property(const char *path, const char *iface,
-                              const char *name, int type, const void *val);
+static int  can_open(const char *ifname);
+static int  can_recv(int fd, struct can_frame *frame, int timeout_ms);
+static int  can_send(int fd, canid_t id, const unsigned char *data, int len);
 static void sig_handler(int sig);
 
 /* ─── Little-endian value extraction ──────────────────────────────────── */
@@ -102,60 +132,59 @@ static signed char s8_le(const unsigned char *buf, int offset) {
 /* ─── Battery state ───────────────────────────────────────────────────── */
 
 typedef struct {
-    double voltage;
-    double current;
-    double soc;
-    double soh;
-    double avg_cell_temp;
-    double max_cell_temp;
-    double min_cell_temp;
-    double max_cell_v;
-    double min_cell_v;
-    double avg_cell_v;
-    double avg_tray_v;
-    double max_tray_v;
-    double min_tray_v;
-    double charge_voltage_limit;
-    double charge_current_limit;
-    double discharge_current_limit;
-    double discharge_voltage_limit;
-    unsigned char total_trays;
-    unsigned char normal_trays;
-    unsigned char fault_trays;
-    unsigned int  alarm_status;      /* 0x501 bytes 0-1 */
-    unsigned int  protection_status; /* 0x501 bytes 2-3 */
-    unsigned int  heartbeat;
-    time_t last_update;
+    double   voltage;
+    double   current;
+    double   soc;
+    double   soh;
+    double   avg_cell_temp;
+    double   max_cell_temp;
+    double   min_cell_temp;
+    double   max_cell_v;
+    double   min_cell_v;
+    double   avg_cell_v;
+    double   avg_tray_v;
+    double   max_tray_v;
+    double   min_tray_v;
+    double   charge_voltage_limit;
+    double   charge_current_limit;
+    double   discharge_current_limit;
+    double   discharge_voltage_limit;
+    unsigned char  total_trays;
+    unsigned char  normal_trays;
+    unsigned char  fault_trays;
+    unsigned int   alarm_status;      /* 0x501 bytes 0-1 */
+    unsigned int   protection_status; /* 0x501 bytes 2-3 */
+    unsigned int   heartbeat;
+    double   cell_v[14];              /* per-cell voltages (1-indexed) */
+    int      cell_v_valid[14];
+    time_t   last_update;
 } battery_state;
 
-static battery_state battery;
-static int           battery_connected = 0;
+static battery_state  battery;
+static int            data_valid = 0;
+static volatile sig_atomic_t running = 1;
 
 /* ─── Battery constants (ELPM482-00005, spec Rev 0.2 Table 4) ─────────── */
 
-#define BATTERY_CAPACITY_AH  94.0   /* was 150.0 (Super-B Epsilon leftover) */
-#define CELLS_PER_MODULE     14     /* 14S; was 26 (Super-B leftover)       */
-#define DEVICE_INSTANCE      280    /* matches the Python driver's default  */
+#define BATTERY_CAPACITY_AH  94.0
+#define CELLS_PER_MODULE     14
 
-/* ─── PDO message parsers ─────────────────────────────────────────────── */
+/* ─── Samsung SDI message parsers ─────────────────────────────────────── */
 
 static void parse_status(const unsigned char *data) {
-    battery.voltage  = u16_le(data, 0) * 0.01;
-    battery.current  = s16_le(data, 2) * 1.0;
-    battery.soc      = (double)data[4];
-    battery.soh      = (double)data[5];
+    battery.voltage   = u16_le(data, 0) * 0.01;
+    battery.current   = s16_le(data, 2) * 1.0;
+    battery.soc       = (double)data[4];
+    battery.soh       = (double)data[5];
     battery.heartbeat = u16_le(data, 6);
 }
 
 static void parse_config(const unsigned char *data) {
-    /* Spec Rev 0.2 Table 8: 0x501 bytes 0-1 = System Alarm Status,
-     * bytes 2-3 = System Protection Status. (0x500 bytes 0/2, used
-     * previously, are the voltage low byte and current.) */
     battery.alarm_status      = u16_le(data, 0);
     battery.protection_status = u16_le(data, 2);
-    battery.total_trays  = data[4];
-    battery.normal_trays = data[5];
-    battery.fault_trays  = data[6];
+    battery.total_trays       = data[4];
+    battery.normal_trays      = data[5];
+    battery.fault_trays       = data[6];
 }
 
 static void parse_limits(const unsigned char *data) {
@@ -166,97 +195,152 @@ static void parse_limits(const unsigned char *data) {
 }
 
 static void parse_cell_voltage(const unsigned char *data) {
-    /* 0x503: 8 bytes — cell-level voltage summary */
     battery.avg_cell_v  = u16_le(data, 0) * 0.001;
     battery.max_cell_v  = u16_le(data, 2) * 0.001;
     battery.min_cell_v  = u16_le(data, 4) * 0.001;
     battery.avg_tray_v  = u16_le(data, 6) * 0.01;
-    /* Note: MaxTrayV and MinTrayV are defined at offsets 8 and 10 in the
-     * Samsung SDI specification but exceed the 8-byte CAN 2.0A frame.
-     * These values are available on CAN IDs 0x510-0x55C (per-cell data)
-     * or 0x505 (extended summary) and are not read by this driver. */
 }
 
 static void parse_temperature(const unsigned char *data) {
+    /* Spec Rev 0.2 Table 8: 0x504 bytes 0-3 = tray voltage extremes */
+    battery.max_tray_v   = u16_le(data, 0) * 0.01;
+    battery.min_tray_v   = u16_le(data, 2) * 0.01;
     battery.avg_cell_temp = (double)s8_le(data, 4);
     battery.max_cell_temp = (double)s8_le(data, 5);
     battery.min_cell_temp = (double)s8_le(data, 6);
 }
 
-/* ─── D-Bus publishing ────────────────────────────────────────────────── */
-
-static void publish_all(void) {
-    int one = 1;
-    int zero = 0;
-
-    if (!battery_connected) {
-        dbus_emit_property("/", "", "Connected", 'i', &one);
-        battery_connected = 1;
+static void parse_cell_frame(int cell_start, const unsigned char *data, int dlc) {
+    /* 0x5F0-0x5F4: bytes 0-1 = Tray-ID (ignored for single-tray),
+     * then up to 3 cell voltages at offsets 2, 4, 6 (U16 LE, 0.001V).
+     * Cell 14 frame (0x5F4) has only 2 cells (offsets 2, 4). */
+    int i;
+    for (i = 0; i < 3 && cell_start + i < 14; i++) {
+        int off = 2 + i * 2;
+        if (off + 2 > dlc) break;
+        unsigned short raw = u16_le(data, off);
+        if (raw != 0) {  /* zero = unpopulated / padding slot */
+            battery.cell_v[cell_start + i] = raw * 0.001;
+            battery.cell_v_valid[cell_start + i] = 1;
+        }
     }
-
-    dbus_emit_property("/", "", "Soc",     'd', &battery.soc);
-    dbus_emit_property("/", "", "Capacity", 'd', &(double){BATTERY_CAPACITY_AH});
-    dbus_emit_property("/", "", "InstalledCapacity", 'd', &(double){BATTERY_CAPACITY_AH});
-
-    double consumed = BATTERY_CAPACITY_AH * (100.0 - battery.soc) / 100.0;
-    dbus_emit_property("/", "", "ConsumedAmphours", 'd', &consumed);
-
-    dbus_emit_property("/", "Dc/0", "Voltage",     'd', &battery.voltage);
-    dbus_emit_property("/", "Dc/0", "Current",     'd', &battery.current);
-    dbus_emit_property("/", "Dc/0", "Power",
-                       'd', &(double){battery.voltage * battery.current});
-    dbus_emit_property("/", "Dc/0", "Temperature", 'd', &battery.avg_cell_temp);
-
-    dbus_emit_property("/", "Info", "MaxChargeCurrent",
-                       'd', &battery.charge_current_limit);
-    dbus_emit_property("/", "Info", "MaxDischargeCurrent",
-                       'd', &battery.discharge_current_limit);
-    dbus_emit_property("/", "Info", "MaxChargeVoltage",
-                       'd', &battery.charge_voltage_limit);
-
-    dbus_emit_property("/", "System", "NrOfModulesOnline",
-                       'i', &(int){battery.normal_trays});
-    dbus_emit_property("/", "System", "NrOfModulesOffline",
-                       'i', &(int){battery.fault_trays});
-    dbus_emit_property("/", "System", "NrOfModulesBlockingCharge",
-                       'i', &zero);
-    dbus_emit_property("/", "System", "NrOfModulesBlockingDischarge",
-                       'i', &zero);
-
-    /* Alarms per Samsung SDI spec Rev 0.2, Table 8:
-     * bit0=Over-Voltage, bit1=Under-Voltage, bit2=Over-Temperature,
-     * bit3=Under-Temperature, bit4=Charge Over-Current,
-     * bit5=Discharge Over-Current, bit6=FET Over-Temperature,
-     * bit7=Tray Voltage Imbalance */
-    /* Victron severity: 0 = OK, 1 = warning, 2 = alarm.
-     * Samsung alarm bits (BMS warning, FETs closed) -> 1;
-     * protection bits (BMS has acted) -> 2 on the same category. */
-    int alarm;
-#define SDI_SEV(bit) ((battery.protection_status & (bit)) ? 2 : \
-                      (battery.alarm_status      & (bit)) ? 1 : 0)
-    alarm = SDI_SEV(0x0001); /* Over-Voltage */
-    dbus_emit_property("/", "Alarms", "HighVoltage", 'i', &alarm);
-    alarm = SDI_SEV(0x0002); /* Under-Voltage */
-    if (battery.protection_status & 0x1000) alarm = 2; /* UV shutdown */
-    dbus_emit_property("/", "Alarms", "LowVoltage", 'i', &alarm);
-    alarm = SDI_SEV(0x0004); /* Over-Temperature */
-    dbus_emit_property("/", "Alarms", "HighTemperature", 'i', &alarm);
-    alarm = SDI_SEV(0x0008); /* Under-Temperature */
-    dbus_emit_property("/", "Alarms", "LowTemperature", 'i', &alarm);
-    alarm = SDI_SEV(0x0010); /* Charge Over-Current */
-    dbus_emit_property("/", "Alarms", "HighChargeCurrent", 'i', &alarm);
-    alarm = SDI_SEV(0x0020); /* Discharge Over-Current */
-    dbus_emit_property("/", "Alarms", "HighDischargeCurrent", 'i', &alarm);
-    alarm = SDI_SEV(0x0040); /* FET Over-Temperature */
-    if (battery.protection_status & 0x7F00) alarm = 2; /* hi-byte prot. */
-    dbus_emit_property("/", "Alarms", "InternalFailure", 'i', &alarm);
-    alarm = SDI_SEV(0x0080); /* Tray Voltage Imbalance */
-    if (battery.protection_status & 0x2000) alarm = 2; /* cell imbal. */
-    dbus_emit_property("/", "Alarms", "CellImbalance", 'i', &alarm);
-#undef SDI_SEV
 }
 
-/* ─── CAN open/read ───────────────────────────────────────────────────── */
+/* ─── Victron CAN-BMS frame builders ──────────────────────────────────── */
+
+static void build_state_frame(unsigned char *data) {
+    /* 0x351 — Battery state (voltage, current, temp, SOC, SOH) */
+    unsigned short v = (unsigned short)(battery.voltage * 100.0 + 0.5);
+    short          i = (short)(battery.current * 10.0 + (battery.current >= 0 ? 0.5 : -0.5));
+    unsigned short t = (unsigned short)(battery.avg_cell_temp * 10.0 + 0.5);
+    unsigned char  soc = (unsigned char)(battery.soc + 0.5);
+    unsigned char  soh = (unsigned char)(battery.soh + 0.5);
+
+    if (soc > 100) soc = 100;
+    if (soh > 100) soh = 100;
+
+    data[0] = v & 0xFF;      data[1] = (v >> 8) & 0xFF;
+    data[2] = i & 0xFF;      data[3] = (i >> 8) & 0xFF;
+    data[4] = t & 0xFF;      data[5] = (t >> 8) & 0xFF;
+    data[6] = soc;
+    data[7] = soh;
+}
+
+static void build_soc_soh_frame(unsigned char *data) {
+    /* 0x355 — Precision SOC/SOH (0.1 % units) */
+    unsigned short soc10 = (unsigned short)(battery.soc * 10.0 + 0.5);
+    unsigned short soh10 = (unsigned short)(battery.soh * 10.0 + 0.5);
+
+    data[0] = soc10 & 0xFF;   data[1] = (soc10 >> 8) & 0xFF;
+    data[2] = soh10 & 0xFF;   data[3] = (soh10 >> 8) & 0xFF;
+    data[4] = 0xFF; data[5] = 0xFF;
+    data[6] = 0xFF; data[7] = 0xFF;
+}
+
+static void build_limits_frame(unsigned char *data) {
+    /* 0x356 — Charge/discharge limits */
+    unsigned short cvl = (unsigned short)(battery.charge_voltage_limit * 10.0 + 0.5);
+    unsigned short ccl = (unsigned short)(battery.charge_current_limit * 10.0 + 0.5);
+    unsigned short dcl = (unsigned short)(battery.discharge_current_limit * 10.0 + 0.5);
+    unsigned short dvl = (unsigned short)(battery.discharge_voltage_limit * 10.0 + 0.5);
+
+    data[0] = cvl & 0xFF;    data[1] = (cvl >> 8) & 0xFF;
+    data[2] = ccl & 0xFF;    data[3] = (ccl >> 8) & 0xFF;
+    data[4] = dcl & 0xFF;    data[5] = (dcl >> 8) & 0xFF;
+    data[6] = dvl & 0xFF;    data[7] = (dvl >> 8) & 0xFF;
+}
+
+static void build_alarms_frame(unsigned char *data) {
+    /* 0x35A — Alarms & warnings
+     *
+     * Samsung SDI 0x501 bitfield layouts (spec Rev 0.2 Table 8):
+     *   bit0 Over-Voltage        bit1 Under-Voltage
+     *   bit2 Over-Temperature    bit3 Under-Temperature
+     *   bit4 Charge Over-Current bit5 Discharge Over-Current
+     *   bit6 FET Over-Temp       bit7 Tray Voltage Imbalance
+     *   bit8 Tray-ID error       bit9 PCS comm error
+     *   bit10 FET failure        bit11 FET OT failure
+     *   bit12 UV shutdown        bit13 Cell voltage imbalance
+     *   bit14 2nd Over-Voltage
+     *
+     * Victron CAN-BMS alarm bitfield:
+     *   bit0 High voltage        bit1 Low voltage
+     *   bit2 High temperature    bit3 Low temperature
+     *   bit4 High charge current bit5 High discharge current
+     *   bit6 Internal failure    bit7 Cell imbalance
+     *
+     * Mapping: Samsung alarm bits → Victron alarm (severity 2);
+     *          Samsung protection bits → Victron warning (severity 1).
+     */
+    unsigned int a = battery.alarm_status;
+    unsigned int p = battery.protection_status;
+    unsigned short alarms = 0, warnings = 0;
+
+    /* Over-Voltage */
+    if (p & 0x0001) alarms  |= 0x01; else if (a & 0x0001) warnings |= 0x01;
+    if (p & 0x4000) alarms  |= 0x01; /* 2nd over-voltage */
+    /* Under-Voltage */
+    if (p & 0x0002) alarms  |= 0x02; else if (a & 0x0002) warnings |= 0x02;
+    if (p & 0x1000) alarms  |= 0x02; /* UV shutdown */
+    /* Over-Temperature */
+    if (p & 0x0004) alarms  |= 0x04; else if (a & 0x0004) warnings |= 0x04;
+    /* Under-Temperature */
+    if (p & 0x0008) alarms  |= 0x08; else if (a & 0x0008) warnings |= 0x08;
+    /* Charge Over-Current */
+    if (p & 0x0010) alarms  |= 0x10; else if (a & 0x0010) warnings |= 0x10;
+    /* Discharge Over-Current */
+    if (p & 0x0020) alarms  |= 0x20; else if (a & 0x0020) warnings |= 0x20;
+    /* Internal failure (FET over-temp, FET failure, tray-ID, PCS comm, etc.) */
+    if (p & (0x0040 | 0x0100 | 0x0200 | 0x0400 | 0x0800)) alarms |= 0x40;
+    else if (a & 0x0040) warnings |= 0x40;
+    /* Cell imbalance */
+    if (p & 0x2000) alarms  |= 0x80; else if (a & 0x0080) warnings |= 0x80;
+
+    data[0] = alarms & 0xFF;   data[1] = (alarms >> 8) & 0xFF;
+    data[2] = warnings & 0xFF; data[3] = (warnings >> 8) & 0xFF;
+    data[4] = 0; data[5] = 0;
+    data[6] = 0; data[7] = 0;
+}
+
+/* ─── Victron frame transmission ──────────────────────────────────────── */
+
+static void send_victron_frames(int can_fd) {
+    unsigned char buf[8];
+
+    build_state_frame(buf);
+    can_send(can_fd, VC_CAN_ID_STATE, buf, 8);
+
+    build_soc_soh_frame(buf);
+    can_send(can_fd, VC_CAN_ID_SOC_SOH, buf, 8);
+
+    build_limits_frame(buf);
+    can_send(can_fd, VC_CAN_ID_LIMITS, buf, 8);
+
+    build_alarms_frame(buf);
+    can_send(can_fd, VC_CAN_ID_ALARMS, buf, 8);
+}
+
+/* ─── CAN open / read / send ──────────────────────────────────────────── */
 
 static int can_open(const char *ifname) {
     int fd = socket(PF_CAN, SOCK_RAW, CAN_RAW);
@@ -264,6 +348,7 @@ static int can_open(const char *ifname) {
         perror("socket(CAN)");
         return -1;
     }
+
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
@@ -271,6 +356,7 @@ static int can_open(const char *ifname) {
         perror("ioctl SIOCGIFINDEX");
         close(fd); return -1;
     }
+
     struct { unsigned short family; unsigned short pad; int ifindex; } addr;
     addr.family  = AF_CAN;
     addr.ifindex = ifr.ifr_ifindex;
@@ -287,284 +373,139 @@ static int can_recv(int fd, struct can_frame *frame, int timeout_ms) {
     int ret = poll(&pfd, 1, timeout_ms);
     if (ret <= 0) return ret;
     ssize_t n = read(fd, frame, sizeof(*frame));
-    /* A partial read is not a usable frame - treat as no data. */
     return (n == (ssize_t)sizeof(*frame)) ? (int)n : 0;
 }
 
-/* ─── D-Bus low-level wire protocol ───────────────────────────────────── */
+static int can_send(int fd, canid_t id, const unsigned char *data, int len) {
+    struct can_frame frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.can_id  = id;
+    frame.can_dlc = (unsigned char)len;
+    memcpy(frame.data, data, len);
 
-static int dbus_connect(void) {
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) { perror("socket unix"); return -1; }
-    struct sockaddr_un addr = {.sun_family = AF_UNIX};
-    strcpy(addr.sun_path, DBUS_SYSTEM_BUS_PATH);
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("connect dbus"); close(fd); return -1;
+    ssize_t n = write(fd, &frame, sizeof(frame));
+    if (n != (ssize_t)sizeof(frame)) {
+        static int send_errors = 0;
+        if (++send_errors <= 5)
+            fprintf(stderr, "can_send: write error (id=0x%03X, errno=%d)\n",
+                    id, errno);
+    } else {
+        /* Reset error counter on success (rate-limit logs) */
+        /* (counter reset implicitly every 2^31 successful sends) */
     }
-
-    /* Read server greeting */
-    char buf[256];
-    int n = read(fd, buf, sizeof(buf) - 1);
-    if (n < 0 || strncmp(buf, "OK ", 3) != 0) {
-        fprintf(stderr, "D-Bus greeting error\n"); close(fd); return -1;
-    }
-
-    /* Send AUTH EXTERNAL */
-    char auth[128];
-    int uid = getuid();
-    auth[0] = '\0';
-    int len = 1 + snprintf(auth + 1, sizeof(auth) - 1,
-                           "AUTH EXTERNAL %x\r\n", uid);
-    if (write(fd, auth, len) < 0) { close(fd); return -1; }
-
-    /* Read AUTH response */
-    n = read(fd, buf, sizeof(buf) - 1);
-    if (n < 0 || strncmp(buf, "OK ", 3) != 0) {
-        fprintf(stderr, "D-Bus auth failed\n"); close(fd); return -1;
-    }
-
-    write(fd, "BEGIN\r\n", 7);
-    return fd;
-}
-
-static int dbus_msg_header(unsigned char *buf, int serial,
-                           const char *dest, const char *path,
-                           const char *iface, const char *member) {
-    memset(buf, 0, 256);
-    buf[0] = 'l'; buf[1] = 0; buf[2] = 0; buf[3] = 1;
-    int pos = 12;
-
-    /* PATH */
-    buf[pos++] = 1; buf[pos++] = 1; buf[pos++] = 'o'; buf[pos] = 0;
-    int plen = (int)strlen(path);
-    buf[pos + 1] = plen;
-    memcpy(buf + pos + 5, path, plen);
-    pos += 5 + plen;
-    while ((pos - 12) & 7) buf[pos++] = 0;
-
-    /* DESTINATION */
-    if (dest) {
-        buf[pos++] = 6; buf[pos++] = 1; buf[pos++] = 's'; buf[pos] = 0;
-        int dlen = (int)strlen(dest);
-        buf[pos + 1] = dlen;
-        memcpy(buf + pos + 5, dest, dlen);
-        pos += 5 + dlen;
-        while ((pos - 12) & 7) buf[pos++] = 0;
-    }
-
-    /* INTERFACE */
-    buf[pos++] = 2; buf[pos++] = 1; buf[pos++] = 's'; buf[pos] = 0;
-    int ilen = (int)strlen(iface);
-    buf[pos + 1] = ilen;
-    memcpy(buf + pos + 5, iface, ilen);
-    pos += 5 + ilen;
-    while ((pos - 12) & 7) buf[pos++] = 0;
-
-    /* MEMBER */
-    buf[pos++] = 3; buf[pos++] = 1; buf[pos++] = 's'; buf[pos] = 0;
-    int mlen = (int)strlen(member);
-    buf[pos + 1] = mlen;
-    memcpy(buf + pos + 5, member, mlen);
-    pos += 5 + mlen;
-    while ((pos - 12) & 7) buf[pos++] = 0;
-
-    /* Header length at byte 4, serial at byte 8 */
-    int hlen = pos - 12;
-    buf[4] = hlen & 0xFF; buf[5] = (hlen >> 8) & 0xFF;
-    buf[6] = (hlen >> 16) & 0xFF; buf[7] = (hlen >> 24) & 0xFF;
-    buf[8] = serial & 0xFF; buf[9] = (serial >> 8) & 0xFF;
-    buf[10] = (serial >> 16) & 0xFF; buf[11] = (serial >> 24) & 0xFF;
-
-    /* 8-byte padding at end of data */
-    int total = pos + 8;
-    memset(buf + pos, 0, 8);
-    return total;
-}
-
-static int dbus_request_name(const char *name) {
-    unsigned char buf[512];
-    int serial = ++dbus_serial;
-    int len = dbus_msg_header(buf, serial, "org.freedesktop.DBus",
-                              "/org/freedesktop/DBus",
-                              "org.freedesktop.DBus", "RequestName");
-    buf[1] = 0x01; /* method call */
-
-    int pos = len - 8;
-    int nlen = (int)strlen(name);
-    buf[pos++] = nlen;
-    memcpy(buf + pos, name, nlen); pos += nlen;
-    memset(buf + pos, 0, 8); pos += 8; /* flags=0 */
-
-    int body_len = pos - (len - 8);
-    buf[4] = body_len & 0xFF; buf[5] = (body_len >> 8) & 0xFF;
-    buf[6] = (body_len >> 16) & 0xFF; buf[7] = (body_len >> 24) & 0xFF;
-    return write(dbus_fd, buf, pos);
-}
-
-static int dbus_emit_property(const char *path, const char *iface,
-                              const char *name, int type, const void *val) {
-    unsigned char buf[1024];
-    int serial = ++dbus_serial;
-    int hpos = dbus_msg_header(buf, serial, NULL, path,
-                               "org.freedesktop.DBus.Properties",
-                               "PropertiesChanged");
-    buf[1] = 0x04; /* signal */
-    int pos = hpos - 8;
-
-    /* Interface name string */
-    int ilen = (int)strlen(iface);
-    buf[pos++] = ilen;
-    memcpy(buf + pos, iface, ilen); pos += ilen;
-    buf[pos++] = 0;
-    while (pos & 3) buf[pos++] = 0;
-
-    /* Array of dict entries: length placeholder */
-    int arr_len_pos = pos;
-    pos += 4;
-    while ((pos - (hpos - 8)) & 7) buf[pos++] = 0;
-
-    /* Dict entry: key string */
-    int klen = (int)strlen(name);
-    buf[pos++] = klen;
-    memcpy(buf + pos, name, klen); pos += klen;
-    buf[pos++] = 0;
-    while (pos & 3) buf[pos++] = 0;
-
-    /* Variant: signature */
-    buf[pos++] = 1; buf[pos++] = (unsigned char)type; buf[pos++] = 0;
-
-    /* Value */
-    switch (type) {
-    case 'd':
-        memcpy(buf + pos, val, 8); pos += 8;
-        break;
-    case 'i':
-        buf[pos++] = ((const int *)val)[0] & 0xFF;
-        buf[pos++] = (((const int *)val)[0] >> 8) & 0xFF;
-        buf[pos++] = (((const int *)val)[0] >> 16) & 0xFF;
-        buf[pos++] = (((const int *)val)[0] >> 24) & 0xFF;
-        break;
-    }
-
-    /* Fill array length */
-    int arr_end = pos;
-    int arr_data_len = arr_end - (arr_len_pos + 4);
-    buf[arr_len_pos] = arr_data_len & 0xFF;
-    buf[arr_len_pos + 1] = (arr_data_len >> 8) & 0xFF;
-    buf[arr_len_pos + 2] = (arr_data_len >> 16) & 0xFF;
-    buf[arr_len_pos + 3] = (arr_data_len >> 24) & 0xFF;
-
-    /* Empty invalidated array */
-    memset(buf + pos, 0, 4); pos += 4;
-
-    /* Fix body length */
-    int body_len = pos - (hpos - 8);
-    buf[4] = body_len & 0xFF; buf[5] = (body_len >> 8) & 0xFF;
-    buf[6] = (body_len >> 16) & 0xFF; buf[7] = (body_len >> 24) & 0xFF;
-
-    return write(dbus_fd, buf, pos);
+    return (n == (ssize_t)sizeof(frame)) ? 0 : -1;
 }
 
 /* ─── Signal handler ──────────────────────────────────────────────────── */
 
-static void sig_handler(int sig) { (void)sig; running = 0; }
+static void sig_handler(int sig) {
+    (void)sig;
+    running = 0;
+}
 
 /* ─── Main ────────────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <can-interface>\n", argv[0]);
+        fprintf(stderr,
+                "Usage: %s <can-interface>\n\n"
+                "Samsung SDI ELPM482-00005 → Victron CAN-BMS protocol translator\n\n"
+                "Translates Samsung SDI CAN PDOs (0x500-0x504, 0x5F0-0x5F4)\n"
+                "into Victron CAN-bus BMS frames (0x351, 0x355, 0x356, 0x35A).\n\n"
+                "The stock Venus OS CAN-BMS driver picks up the translated\n"
+                "frames and publishes to D-Bus.  No custom D-Bus code needed.\n",
+                argv[0]);
         return 1;
     }
 
-    signal(SIGINT, sig_handler);
+    signal(SIGINT,  sig_handler);
     signal(SIGTERM, sig_handler);
+    signal(SIGPIPE, SIG_IGN);  /* prevent crash on CAN send failure */
 
     int can_fd = can_open(argv[1]);
-    if (can_fd < 0) return 1;
-    printf("samsung-sdi-bms: CAN connected on %s\n", argv[1]);
-
-    dbus_fd = dbus_connect();
-    if (dbus_fd < 0) {
-        fprintf(stderr, "D-Bus connect failed\n");
+    if (can_fd < 0) {
+        fprintf(stderr, "FATAL: cannot open CAN interface %s\n", argv[1]);
         return 1;
     }
-    printf("samsung-sdi-bms: D-Bus connected\n");
-
-    dbus_request_name(DBUS_SERVICE_NAME);
-    printf("samsung-sdi-bms: registered %s\n", DBUS_SERVICE_NAME);
-
-    /* Publish static paths */
-    dbus_emit_property("/", "", "ProductId", 'i',
-                       &(int){0x0001});
-    dbus_emit_property("/", "", "ProductName", 's',
-                       "Samsung SDI ELPM482-00005");
-    dbus_emit_property("/", "", "HardwareVersion", 's',
-                       "ELPM482-00005");
-    dbus_emit_property("/", "", "FirmwareVersion", 's',
-                       "Rev 0.2");
-    dbus_emit_property("/", "Mgmt", "ProcessName", 's',
-                       "samsung-sdi-bms");
-    dbus_emit_property("/", "Mgmt", "ProcessVersion", 's',
-                       "1.0.0");
-    dbus_emit_property("/", "Mgmt", "Connection", 's',
-                       "CAN PDO 500kbps");
-    dbus_emit_property("/", "System", "NrOfCellsPerBattery", 'i',
-                       &(int){CELLS_PER_MODULE});
-    dbus_emit_property("/", "", "DeviceInstance", 'i', &(int){DEVICE_INSTANCE});
-
-    printf("samsung-sdi-bms: running, listening for PDOs\n");
+    printf("samsung-sdi-bms: listening on %s, translating to Victron CAN-BMS\n",
+           argv[1]);
+    printf("                   (0x351 state, 0x355 SOC/SOH, 0x356 limits, 0x35A alarms)\n");
 
     memset(&battery, 0, sizeof(battery));
+
+    /* Accept frames large enough to contain the fields we parse.
+     * 0x500-0x503 need 8 bytes, 0x504 needs 7, 0x5F0-0x5F4 need 6-8. */
+    static const unsigned char min_dlc[5] = {8, 8, 8, 8, 7};
 
     while (running) {
         struct can_frame frame;
         int ret = can_recv(can_fd, &frame, 1000);
         if (ret <= 0) {
-            /* Check timeout */
-            if (battery_connected &&
+            /* No CAN traffic — mark stale after timeout */
+            if (data_valid &&
                 time(NULL) - battery.last_update > DATA_TIMEOUT_SEC) {
-                battery_connected = 0;
-                dbus_emit_property("/", "", "Connected", 'i',
-                                   &(int){0});
+                data_valid = 0;
+                printf("samsung-sdi-bms: data timeout, stopping translation\n");
             }
             continue;
         }
 
-        /* Only process known Samsung SDI CAN IDs, and only frames
-         * long enough to hold the fields we read (0x500-0x503 need 8
-         * bytes, 0x504 needs 7). Short frames would silently parse
-         * stale buffer bytes as data. */
-        {
-            static const unsigned char min_dlc[5] = {8, 8, 8, 8, 7};
-            if (frame.can_id >= SDI_CAN_ID_STATUS &&
-                frame.can_id <= SDI_CAN_ID_TEMPERATURE &&
-                frame.can_dlc <
-                    min_dlc[frame.can_id - SDI_CAN_ID_STATUS])
+        /* Filter known Samsung SDI IDs, validate frame length */
+        if (frame.can_id >= SDI_CAN_ID_STATUS &&
+            frame.can_id <= SDI_CAN_ID_TEMPERATURE) {
+            if (frame.can_dlc <
+                min_dlc[frame.can_id - SDI_CAN_ID_STATUS])
                 continue;
-        }
-        switch (frame.can_id) {
-        case SDI_CAN_ID_STATUS:       parse_status(frame.data);       break;
-        case SDI_CAN_ID_CONFIG:       parse_config(frame.data);       break;
-        case SDI_CAN_ID_LIMITS:       parse_limits(frame.data);       break;
-        case SDI_CAN_ID_CELL_VOLTAGE: parse_cell_voltage(frame.data); break;
-        case SDI_CAN_ID_TEMPERATURE:  parse_temperature(frame.data);  break;
-        default:
+
+            switch (frame.can_id) {
+            case SDI_CAN_ID_STATUS:
+                parse_status(frame.data);
+                break;
+            case SDI_CAN_ID_CONFIG:
+                parse_config(frame.data);
+                break;
+            case SDI_CAN_ID_LIMITS:
+                parse_limits(frame.data);
+                break;
+            case SDI_CAN_ID_CELL_VOLTAGE:
+                parse_cell_voltage(frame.data);
+                break;
+            case SDI_CAN_ID_TEMPERATURE:
+                parse_temperature(frame.data);
+                break;
+            default:
+                continue;
+            }
+        } else if (frame.can_id >= SDI_CAN_ID_CELL_1_3 &&
+                   frame.can_id <= SDI_CAN_ID_CELL_13_14) {
+            int cell_start;
+            switch (frame.can_id) {
+            case SDI_CAN_ID_CELL_1_3:   cell_start = 0; break;
+            case SDI_CAN_ID_CELL_4_6:   cell_start = 3; break;
+            case SDI_CAN_ID_CELL_7_9:   cell_start = 6; break;
+            case SDI_CAN_ID_CELL_10_12: cell_start = 9; break;
+            case SDI_CAN_ID_CELL_13_14: cell_start = 12; break;
+            default: continue;
+            }
+            parse_cell_frame(cell_start, frame.data, frame.can_dlc);
+        } else {
             continue;
         }
 
         battery.last_update = time(NULL);
 
-        /* Publish after receiving the status message (0x500) which carries
-         * the most critical data. Limits and cell data are published on
-         * their respective messages as well, but we batch all on 0x500. */
+        /* Translate and send Victron frames after receiving the status
+         * message (0x500) which carries the most critical data. */
         if (frame.can_id == SDI_CAN_ID_STATUS) {
-            publish_all();
+            if (!data_valid) {
+                data_valid = 1;
+                printf("samsung-sdi-bms: data received, translating...\n");
+            }
+            send_victron_frames(can_fd);
         }
     }
 
     printf("samsung-sdi-bms: shutting down\n");
     if (can_fd >= 0) close(can_fd);
-    if (dbus_fd >= 0) close(dbus_fd);
     return 0;
 }

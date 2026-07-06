@@ -1,6 +1,11 @@
 #!/bin/bash
-# Deploy Samsung SDI BMS driver to Victron Cerbo GX
+# Deploy Samsung SDI → Victron CAN-BMS protocol translator to Cerbo GX
 # Run from the repository root on your development machine.
+#
+# The translator reads Samsung SDI CAN PDOs (0x500-0x504, 0x5F0-0x5F4)
+# and re-transmits them as Victron CAN-bus BMS frames (0x351, 0x355,
+# 0x356, 0x35A).  The stock Venus OS CAN-BMS driver then publishes to
+# D-Bus — no custom D-Bus code needed.
 #
 # Usage: ./scripts/install-to-cerbo.sh <cerbo-ip> [password]
 
@@ -24,30 +29,22 @@ fi
 SSH="sshpass -p $CERBO_PASS ssh -o StrictHostKeyChecking=no root@$CERBO_IP"
 SCP="sshpass -p $CERBO_PASS scp -o StrictHostKeyChecking=no"
 
-echo "=== Samsung SDI BMS Driver Installation ==="
+echo "=== Samsung SDI → Victron CAN-BMS Translator ==="
 echo "Target: $CERBO_IP"
 echo ""
 
-echo "[1/5] Copying source files..."
-$SSH 'mkdir -p /data/samsung-sdi/src /data/samsung-sdi/docs /data/samsung-sdi/scripts'
-$SCP src/samsung-sdi-bms.c src/samsung_sdi_bms_service.py \
-     src/samsung_sdi_can_client.py \
-     root@$CERBO_IP:/data/samsung-sdi/src/
-$SCP Makefile config.ini root@$CERBO_IP:/data/samsung-sdi/
-$SCP docs/INSTALL.md root@$CERBO_IP:/data/samsung-sdi/docs/
+echo "[1/4] Copying source files..."
+$SSH 'mkdir -p /data/samsung-sdi'
+$SCP src/samsung-sdi-bms.c Makefile \
+     root@$CERBO_IP:/data/samsung-sdi/
 echo "  Done."
 
-echo "[2/5] Installing build tools..."
+echo "[2/4] Installing build tools and compiling..."
 $SSH 'opkg update && opkg install gcc gcc-symlinks binutils libgcc-s-dev'
-echo "[3/5] Compiling C driver..."
 $SSH 'cd /data/samsung-sdi && make'
 echo "  Done."
 
-echo "[4/5] Configuring CAN interface (500 kbps)..."
-$SSH 'ip link set can0 type can bitrate 500000 2>/dev/null; ip link set can0 up 2>/dev/null'
-echo "  Done."
-
-echo "[5/5] Installing daemontools service..."
+echo "[3/4] Installing daemontools service..."
 $SSH 'mkdir -p /service/samsung-sdi-bms/log'
 $SSH 'cat > /service/samsung-sdi-bms/run << "RUNEOF"
 #!/bin/sh
@@ -61,29 +58,47 @@ LOGEOF'
 $SSH 'chmod +x /service/samsung-sdi-bms/run /service/samsung-sdi-bms/log/run'
 echo "  Done."
 
-sleep 4
+sleep 3
+
+echo "[4/4] Configuring Victron CAN-BMS driver..."
+# Enable CAN-bus BMS profile on can0 (profile 4 = CAN-bus BMS 500 kbit/s)
+$SSH 'dbus -y com.victronenergy.settings /Settings/Canbus/can0/Profile SetValue 4' 2>/dev/null || {
+    echo "  Note: Could not set CAN profile via D-Bus."
+    echo "  Configure manually in Venus OS: Settings → Services → CAN-bus BMS (500 kbit/s)"
+}
+echo "  Done."
+
+sleep 2
 
 echo ""
 echo "=== Verification ==="
 $SSH '
-echo "Process:"
+echo "Translator process:"
 ps | grep samsung-sdi-bms | grep -v grep || echo "  (starting up)"
 echo ""
-echo "Battery data:"
-soc=$(dbus -y com.victronenergy.battery.samsung_sdi /Soc GetValue 2>/dev/null || echo "not yet")
-echo "  SoC: $soc%"
-voltage=$(dbus -y com.victronenergy.battery.samsung_sdi /Dc/0/Voltage GetValue 2>/dev/null || echo "not yet")
+echo "Victron CAN-BMS service:"
+ps | grep can-bus-bms | grep -v grep || echo "  (checking...)"
+echo ""
+echo "Battery data (via Victron CAN-BMS):"
+soc=$(dbus -y com.victronenergy.battery.can0 /Soc GetValue 2>/dev/null || echo "not yet")
+echo "  SoC: $soc"
+voltage=$(dbus -y com.victronenergy.battery.can0 /Dc/0/Voltage GetValue 2>/dev/null || echo "not yet")
 echo "  Voltage: $voltage"
 '
 
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "Useful commands on the Cerbo:"
-echo "  Status:   svstat /service/samsung-sdi-bms"
-echo "  Logs:     tail -f /var/log/samsung-sdi-bms/current"
-echo "  Restart:  svc -t /service/samsung-sdi-bms"
+echo "What this does:"
+echo "  Samsung SDI BMS → CAN (0x500-0x504) → Translator (samsung-sdi-bms)"
+echo "    → Victron CAN-BMS frames (0x351, 0x355, 0x356, 0x35A)"
+echo "    → Victron can-bus-bms driver → D-Bus → Venus OS GUI"
 echo ""
-echo "Set as system battery service:"
-echo "  dbus -y com.victronenergy.settings /Settings/SystemSetup/BatteryService \\"
-echo "    SetValue 'com.victronenergy.battery.samsung_sdi'"
+echo "Useful commands on the Cerbo:"
+echo "  Translator status: svstat /service/samsung-sdi-bms"
+echo "  Translator logs:   tail -f /var/log/samsung-sdi-bms/current"
+echo "  Restart translator: svc -t /service/samsung-sdi-bms"
+echo ""
+echo "Troubleshooting:"
+echo "  Check CAN traffic:  candump can0"
+echo "  Check D-Bus battery: dbus -y com.victronenergy.battery.can0 /Soc GetValue"
