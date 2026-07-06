@@ -41,14 +41,18 @@ class SamsungSDICANClient:
                 'system_soc': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U8', 'scale': 1.0, 'unit': '%', 'description': 'Average SOC in all tray'},
                 'system_soh': {'byte_offset': 5, 'bit_offset': None, 'data_type': 'U8', 'scale': 1.0, 'unit': '%', 'description': 'Average SOH in all tray'},
                 'system_heartbeat': {'byte_offset': 6, 'bit_offset': None, 'data_type': 'U16', 'scale': 1.0, 'unit': 'dec', 'description': 'Heart-Beat Value'},
-                'alarm_status': {'byte_offset': 0, 'bit_offset': 0, 'data_type': 'BITFIELD8', 'scale': 1.0, 'unit': '', 'description': 'System Alarm Status'},
-                'protection_status': {'byte_offset': 2, 'bit_offset': 0, 'data_type': 'BITFIELD8', 'scale': 1.0, 'unit': '', 'description': 'System Protection Status'},
             }
         ),
         0x501: CANMessageDefinition(
             can_id=0x501,
             name="System Configuration",
             fields={
+                # Spec Rev 0.2 Table 8: System Alarm Status is 0x501
+                # bytes 0-1 and System Protection Status bytes 2-3.
+                # (Previously mis-sourced from 0x500 bytes 0/2, which are
+                # the voltage low byte and current - issue #20.)
+                'alarm_status': {'byte_offset': 0, 'bit_offset': None, 'data_type': 'U16', 'scale': 1.0, 'unit': '', 'description': 'System Alarm Status bitfield'},
+                'protection_status': {'byte_offset': 2, 'bit_offset': None, 'data_type': 'U16', 'scale': 1.0, 'unit': '', 'description': 'System Protection Status bitfield'},
                 'total_trays': {'byte_offset': 4, 'bit_offset': None, 'data_type': 'U8', 'scale': 1.0, 'unit': 'EA', 'description': 'Number of Total Tray'},
                 'normal_trays': {'byte_offset': 5, 'bit_offset': None, 'data_type': 'U8', 'scale': 1.0, 'unit': 'EA', 'description': 'Number of Normal Operating Tray'},
                 'fault_trays': {'byte_offset': 6, 'bit_offset': None, 'data_type': 'U8', 'scale': 1.0, 'unit': 'EA', 'description': 'Number of Fault Tray'},
@@ -229,6 +233,11 @@ class SamsungSDICANClient:
         """Get discharge current limitation"""
         data = self.read_battery_data()
         return data.get('discharge_current_limit')
+
+    def get_protection_status(self) -> Optional[int]:
+        """Get protection status bitfield (0x501 bytes 2-3)"""
+        data = self.read_battery_data()
+        return data.get('protection_status')
 
     def get_alarm_status(self) -> Optional[int]:
         """Get alarm status bitfield"""
