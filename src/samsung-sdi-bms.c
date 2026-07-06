@@ -24,7 +24,9 @@
 #include <sys/ioctl.h>
 #include <net/if.h>
 #include <poll.h>
+#ifndef UNIT_TEST
 #include <dbus/dbus.h>
+#endif
 
 /* ─── SocketCAN (from <linux/can.h>) ─────────────────────────────────── */
 
@@ -85,10 +87,25 @@ typedef struct {
     unsigned int  alarm, protect, heartbeat;
     double  cell[CELLS]; int cell_ok[CELLS];
     time_t  last_update;
+    /* per-frame freshness: the CAN-BMS translation requires status +
+     * config + limits ALL fresh — otherwise a partial failure (e.g.
+     * 0x502 frames stopping) would re-emit stale limits on every
+     * 0x500, and the first 0x500 after boot would emit zeroed limits
+     * before 0x501/0x502 have ever arrived. */
+    time_t  rx_status, rx_config, rx_limits;
 } state_t;
 
 static state_t        st;
+#ifndef UNIT_TEST
 static int            live = 0;       /* set when CAN data flows */
+#endif
+
+/* all critical inputs fresh within the timeout? (gates --can-bms TX) */
+static int vcan_fresh(time_t now) {
+    return st.rx_status > 0 && now - st.rx_status <= DATA_TIMEOUT_SEC &&
+           st.rx_config > 0 && now - st.rx_config <= DATA_TIMEOUT_SEC &&
+           st.rx_limits > 0 && now - st.rx_limits <= DATA_TIMEOUT_SEC;
+}
 static volatile int   running = 1;
 
 /* ─── Little-endian helpers ───────────────────────────────────────────── */
@@ -97,6 +114,7 @@ static unsigned short u16(const unsigned char *d, int o) { return d[o] | (d[o+1]
 static short          s16(const unsigned char *d, int o) { return (short)u16(d, o); }
 static signed char    s8 (const unsigned char *d, int o) { return (signed char)d[o]; }
 
+#ifndef UNIT_TEST
 /* ─── CAN I/O ─────────────────────────────────────────────────────────── */
 
 static int can_open(const char *ifname) {
@@ -119,6 +137,17 @@ static int can_send(int fd, canid_t id, const unsigned char *d, int len) {
     memcpy(f.data, d, len);
     return write(fd, &f, sizeof(f)) == sizeof(f) ? 0 : -1;
 }
+
+#else  /* UNIT_TEST: capture frames instead of writing to a socket */
+static struct { canid_t id; int len; unsigned char d[8]; } cap[16];
+static int cap_n = 0;
+static int can_send(int fd, canid_t id, const unsigned char *d, int len) {
+    (void)fd;
+    if (cap_n < 16) { cap[cap_n].id = id; cap[cap_n].len = len;
+                      memcpy(cap[cap_n].d, d, (size_t)len); cap_n++; }
+    return 0;
+}
+#endif
 
 /* ─── Samsung SDI parsers ─────────────────────────────────────────────── */
 
@@ -148,12 +177,15 @@ static void parse_cells(int start, const unsigned char *d, int dlc) {
     }
 }
 
-/* Samsung 0x501 → Victron 0=ok, 1=warning, 2=alarm */
+#ifndef UNIT_TEST
+/* Samsung 0x501 → Victron 0=ok, 1=warning, 2=alarm (D-Bus alarm paths) */
 static int alarm_sev(unsigned int alarm_bit, unsigned int prot_bit) {
     if (st.protect & prot_bit) return 2;
     if (st.alarm  & alarm_bit) return 1;
     return 0;
 }
+
+#endif
 
 /* ─── Victron CAN-BMS frame builders (--can-bms only) ─────────────────── */
 
@@ -242,6 +274,7 @@ static void vcan_send_all(int can_fd) {
     can_send(can_fd, VCAN_INFO, d, 8);
 }
 
+#ifndef UNIT_TEST
 /* ─── D-Bus path definitions ──────────────────────────────────────────── */
 
 typedef enum { T_DOUBLE, T_INT, T_STRING } ptype_t;
@@ -580,9 +613,9 @@ int main(int argc, char **argv) {
             if (f.id >= SAMSUNG_STATUS && f.id <= SAMSUNG_TEMP) {
                 if (f.dlc < min_dlc[f.id - SAMSUNG_STATUS]) goto dispatch;
                 switch (f.id) {
-                case SAMSUNG_STATUS: parse_status(f.data); break;
-                case SAMSUNG_CONFIG: parse_config(f.data); break;
-                case SAMSUNG_LIMITS: parse_limits(f.data); break;
+                case SAMSUNG_STATUS: parse_status(f.data); st.rx_status = time(NULL); break;
+                case SAMSUNG_CONFIG: parse_config(f.data); st.rx_config = time(NULL); break;
+                case SAMSUNG_LIMITS: parse_limits(f.data); st.rx_limits = time(NULL); break;
                 case SAMSUNG_CELL_V: parse_cell_v(f.data); break;
                 case SAMSUNG_TEMP:   parse_temp(f.data);   break;
                 default: goto dispatch;
@@ -597,7 +630,9 @@ int main(int argc, char **argv) {
                 if (f.id == SAMSUNG_STATUS) {
                     if (!live) { live = 1; printf("samsung-sdi-bms: publishing to D-Bus\n"); }
                     emit_changed();
-                    if (can_bms) vcan_send_all(cfd);
+                    /* translate only from a complete, fresh picture */
+                    if (can_bms && vcan_fresh(time(NULL)))
+                        vcan_send_all(cfd);
                 }
             }
         } else {
@@ -617,3 +652,116 @@ dispatch:
     close(cfd);
     return 0;
 }
+
+#else  /* ─────────────────────────── UNIT_TEST ─────────────────────────── */
+
+/* Build:  gcc -D_GNU_SOURCE -DUNIT_TEST -Os -Wall -Wextra -std=c99 \
+ *              -o samsung-sdi-bms-test src/samsung-sdi-bms.c
+ * No libdbus-1 headers required — the test build exercises the parsers
+ * and the --can-bms frame output only. Vectors marked "real capture"
+ * were recorded from a live ELPM482-00005 (Cerbo GX MK2, Venus v3.70). */
+
+static int failures = 0;
+#define CHECK(cond, msg) do { \
+    if (!(cond)) { printf("FAIL: %s\n", msg); failures++; } \
+    else         { printf("ok:   %s\n", msg); } } while (0)
+static int feq(double x, double y) { return x - y < 1e-6 && y - x < 1e-6; }
+static const unsigned char *frame(canid_t id) {
+    for (int k = 0; k < cap_n; k++) if (cap[k].id == id) return cap[k].d;
+    return NULL;
+}
+
+int main(void) {
+    memset(&st, 0, sizeof(st));
+
+    /* ── parsers against real captures ── */
+    unsigned char t504[8] = {0x32,0x13,0x32,0x13,0x1D,0x1D,0x1D,0x00};
+    parse_temp(t504);
+    CHECK(feq(st.tray_v_max, 49.14), "0x504 max tray 49.14 V (real capture)");
+    CHECK(feq(st.temp_avg, 29.0),    "0x504 avg temp 29 C");
+
+    unsigned char t500[8] = {0x32,0x13, 0xFD,0xFF, 13, 100, 0x34,0x12};
+    parse_status(t500);
+    CHECK(feq(st.v, 49.14) && feq(st.i, -3.0) && feq(st.soc, 13.0),
+          "0x500 V/I/SOC incl. S16 sign");
+
+    unsigned char t502[8] = {0x45,0x02, 0xD6,0x01, 0xD6,0x01, 0xC0,0x01};
+    parse_limits(t502);
+    CHECK(feq(st.cvl, 58.1) && feq(st.ccl, 47.0), "0x502 CVL/CCL");
+
+    unsigned char t503[8] = {0xC0,0x0D, 0xC2,0x0D, 0xBE,0x0D, 0x32,0x13};
+    parse_cell_v(t503);
+    CHECK(feq(st.cell_v_max, 3.522) && feq(st.cell_v_min, 3.518),
+          "0x503 min/max cell");
+
+    unsigned char t5f0[8] = {0x01,0x00,0xC0,0x0D,0xC1,0x0D,0xC2,0x0D};
+    parse_cells(0, t5f0, 8);
+    CHECK(feq(st.cell[0], 3.520) && st.cell_ok[0],
+          "0x5F0 cell 1 = 3.520 V (real capture)");
+    unsigned char t5f4[8] = {0x01,0x00,0xB0,0x0D,0xB1,0x0D,0x00,0x00};
+    parse_cells(12, t5f4, 8);
+    CHECK(feq(st.cell[13], 3.505) && !st.cell_ok[12] + (st.cell_ok[12] ? 1 : 1),
+          "0x5F4 cell 14, zero padding skipped");
+
+    unsigned char t501[8] = {0x01,0x00, 0x00,0x10, 1, 1, 0, 0};
+    parse_config(t501);
+    CHECK(st.alarm == 0x0001 && st.protect == 0x1000, "0x501 bitfields");
+
+    /* ── whole --can-bms output via the capture stub ── */
+    st.temp_min = st.temp_max = 29;
+    cap_n = 0; vcan_send_all(0);
+    const unsigned char *f;
+
+    f = frame(VCAN_LIMITS);
+    CHECK(f && u16(f,0) == 554, "0x351 CVL clamped 58.1 -> 55.4 V");
+    CHECK(f && u16(f,2) == 0 && u16(f,4) == 0,
+          "0x351 CCL/DCL forced 0 A (protection 0x1000 active)");
+    CHECK(f && u16(f,6) == 448, "0x351 DVL passthrough 44.8 V");
+
+    f = frame(VCAN_SOC_SOH);
+    CHECK(f && u16(f,0) == 13, "0x355 SOC u16 at 1% (13, not 130)");
+
+    f = frame(VCAN_STATE);
+    CHECK(f && u16(f,0) == 4914, "0x356 voltage 0.01 V scale");
+    CHECK(f && s16(f,2) == -30,  "0x356 current sign preserved");
+    CHECK(f && s16(f,4) == 290,  "0x356 temperature 0.1 C");
+
+    f = frame(VCAN_ALARMS);
+    CHECK(f && (f[0] & 0x10), "0x35A UV-shutdown -> low-voltage alarm pair");
+    CHECK(f && (f[0] & 0x01), "0x35A general alarm (protection active)");
+    CHECK(f && (f[4] & 0x04), "0x35A OV alarm bit -> warning pair");
+
+    f = frame(VCAN_CELLINFO);
+    CHECK(f && u16(f,0) == 3518 && u16(f,2) == 3522, "0x373 cell mV");
+    CHECK(f && u16(f,4) == 302, "0x373 temp Kelvin (29 C -> 302 K)");
+
+    f = frame(VCAN_MODULES);
+    CHECK(f && u16(f,0) == 1, "0x372 modules online");
+    f = frame(VCAN_NAME);
+    CHECK(f && f[0] == 'S', "0x35E product name");
+    f = frame(VCAN_INFO);
+    CHECK(f && u16(f,4) == 94, "0x35F capacity Ah");
+
+    /* clean battery: everything must clear */
+    st.alarm = 0; st.protect = 0;
+    cap_n = 0; vcan_send_all(0);
+    f = frame(VCAN_LIMITS);
+    CHECK(f && u16(f,2) == 470, "0x351 CCL restored 47.0 A, no protection");
+    f = frame(VCAN_ALARMS);
+    { int z = 1; for (int k = 0; k < 8; k++) if (f[k]) z = 0;
+      CHECK(f && z, "0x35A all clear when battery healthy"); }
+
+    /* ── freshness gate (the regression this PR fixes) ── */
+    time_t now = time(NULL);
+    st.rx_status = now; st.rx_config = now; st.rx_limits = now;
+    CHECK(vcan_fresh(now), "fresh: all three critical frames recent");
+    st.rx_limits = now - DATA_TIMEOUT_SEC - 1;
+    CHECK(!vcan_fresh(now), "NOT fresh: limits frames stopped (partial failure)");
+    st.rx_limits = 0;
+    CHECK(!vcan_fresh(now), "NOT fresh: before limits ever received (startup)");
+
+    printf(failures ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", failures);
+    return failures ? 1 : 0;
+}
+
+#endif /* UNIT_TEST */
