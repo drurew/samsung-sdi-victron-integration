@@ -99,20 +99,40 @@ struct can_frame {
 
 /* Victron CAN-BMS protocol ────────────────────────────────────────────── */
 
-#define VC_CAN_ID_STATE             0x351
+/* Victron CAN-bus BMS frame semantics (verified against the stock
+ * Venus OS driver on live hardware — see docs/MAPPING.md):
+ *   0x351 = LIMITS  (CVL 0.1V, CCL 0.1A, DCL 0.1A, DVL 0.1V)
+ *   0x355 = SOC/SOH (u16, 1 %)
+ *   0x356 = STATE   (V 0.01V s16, I 0.1A s16, T 0.1C s16)
+ * The previous revision had 0x351/0x356 semantics swapped, which the
+ * stock driver ingests as a CVL of ~489 V and a pack voltage of ~5.8 V. */
+#define VC_CAN_ID_LIMITS            0x351
 #define VC_CAN_ID_SOC_SOH           0x355
-#define VC_CAN_ID_LIMITS            0x356
+#define VC_CAN_ID_STATE             0x356
 #define VC_CAN_ID_ALARMS            0x35A
+#define VC_CAN_ID_NAME              0x35E
+#define VC_CAN_ID_INFO              0x35F
+#define VC_CAN_ID_MODULES           0x372
+#define VC_CAN_ID_CELLINFO          0x373
 
-/* Data timeout: mark disconnected after 5 s without any SDI frame */
+/* Data timeout: stop translating after this long without fresh
+ * critical frames (0x500 status + 0x501 config + 0x502 limits).
+ * Overridable with --timeout. */
 #define DATA_TIMEOUT_SEC  5
+
+/* Charge-voltage ceiling: emitted CVL is min(BMS CVL, this).
+ * 55.4 V = 3.957 V/cell on 14S; the BMS broadcasts 58.1 V (4.15 V/cell).
+ * Overridable with --cvl-max. */
+#define DEFAULT_CVL_MAX   55.4
 
 /* ─── Forward declarations ────────────────────────────────────────────── */
 
+#ifndef UNIT_TEST
 static int  can_open(const char *ifname);
 static int  can_recv(int fd, struct can_frame *frame, int timeout_ms);
 static int  can_send(int fd, canid_t id, const unsigned char *data, int len);
 static void sig_handler(int sig);
+#endif
 
 /* ─── Little-endian value extraction ──────────────────────────────────── */
 
@@ -128,6 +148,11 @@ static short s16_le(const unsigned char *buf, int offset) {
 static signed char s8_le(const unsigned char *buf, int offset) {
     return (signed char)buf[offset];
 }
+
+/* ─── Battery constants (ELPM482-00005, spec Rev 0.2 Table 4) ─────────── */
+
+#define BATTERY_CAPACITY_AH  94.0   /* default; --capacity-ah overrides (10 modules = 940) */
+#define CELLS_PER_MODULE     14
 
 /* ─── Battery state ───────────────────────────────────────────────────── */
 
@@ -158,16 +183,29 @@ typedef struct {
     double   cell_v[14];              /* per-cell voltages (1-indexed) */
     int      cell_v_valid[14];
     time_t   last_update;
+    /* per-frame freshness: translation requires ALL of status/config/
+     * limits to be fresh, so a partial failure (e.g. limits frames
+     * stopping) suspends TX instead of freezing stale limits */
+    time_t   rx_status;
+    time_t   rx_config;
+    time_t   rx_limits;
 } battery_state;
 
 static battery_state  battery;
+#ifndef UNIT_TEST
 static int            data_valid = 0;
+#endif
 static volatile sig_atomic_t running = 1;
+static double         cvl_max     = DEFAULT_CVL_MAX;
+static double         capacity_ah = BATTERY_CAPACITY_AH;
+static int            timeout_sec = DATA_TIMEOUT_SEC;
 
-/* ─── Battery constants (ELPM482-00005, spec Rev 0.2 Table 4) ─────────── */
-
-#define BATTERY_CAPACITY_AH  94.0
-#define CELLS_PER_MODULE     14
+/* All critical inputs fresh within timeout? */
+static int data_fresh(time_t now) {
+    return battery.rx_status > 0 && now - battery.rx_status <= timeout_sec &&
+           battery.rx_config > 0 && now - battery.rx_config <= timeout_sec &&
+           battery.rx_limits > 0 && now - battery.rx_limits <= timeout_sec;
+}
 
 /* ─── Samsung SDI message parsers ─────────────────────────────────────── */
 
@@ -229,39 +267,51 @@ static void parse_cell_frame(int cell_start, const unsigned char *data, int dlc)
 /* ─── Victron CAN-BMS frame builders ──────────────────────────────────── */
 
 static void build_state_frame(unsigned char *data) {
-    /* 0x351 — Battery state (voltage, current, temp, SOC, SOH) */
-    unsigned short v = (unsigned short)(battery.voltage * 100.0 + 0.5);
-    short          i = (short)(battery.current * 10.0 + (battery.current >= 0 ? 0.5 : -0.5));
-    unsigned short t = (unsigned short)(battery.avg_cell_temp * 10.0 + 0.5);
-    unsigned char  soc = (unsigned char)(battery.soc + 0.5);
-    unsigned char  soh = (unsigned char)(battery.soh + 0.5);
-
-    if (soc > 100) soc = 100;
-    if (soh > 100) soh = 100;
+    /* 0x356 — live state: V (s16, 0.01 V), I (s16, 0.1 A, + = charging),
+     * T (s16, 0.1 C). 6 bytes. SOC/SOH belong in 0x355, not here. */
+    short v = (short)(battery.voltage * 100.0 + 0.5);
+    short i = (short)(battery.current * 10.0 +
+                      (battery.current >= 0 ? 0.5 : -0.5));
+    short t = (short)(battery.avg_cell_temp * 10.0 +
+                      (battery.avg_cell_temp >= 0 ? 0.5 : -0.5));
 
     data[0] = v & 0xFF;      data[1] = (v >> 8) & 0xFF;
     data[2] = i & 0xFF;      data[3] = (i >> 8) & 0xFF;
     data[4] = t & 0xFF;      data[5] = (t >> 8) & 0xFF;
-    data[6] = soc;
-    data[7] = soh;
+    data[6] = 0; data[7] = 0;
 }
 
 static void build_soc_soh_frame(unsigned char *data) {
-    /* 0x355 — Precision SOC/SOH (0.1 % units) */
-    unsigned short soc10 = (unsigned short)(battery.soc * 10.0 + 0.5);
-    unsigned short soh10 = (unsigned short)(battery.soh * 10.0 + 0.5);
+    /* 0x355 — SOC and SOH, u16 at 1 % (not 0.1 %: a 0.1 % encoding is
+     * read by the stock driver as e.g. 110 % for an 11 % battery). */
+    unsigned short soc = (unsigned short)(battery.soc + 0.5);
+    unsigned short soh = (unsigned short)(battery.soh + 0.5);
+    if (soc > 100) soc = 100;
+    if (soh > 100) soh = 100;
 
-    data[0] = soc10 & 0xFF;   data[1] = (soc10 >> 8) & 0xFF;
-    data[2] = soh10 & 0xFF;   data[3] = (soh10 >> 8) & 0xFF;
-    data[4] = 0xFF; data[5] = 0xFF;
-    data[6] = 0xFF; data[7] = 0xFF;
+    data[0] = soc & 0xFF;   data[1] = (soc >> 8) & 0xFF;
+    data[2] = soh & 0xFF;   data[3] = (soh >> 8) & 0xFF;
+    data[4] = 0; data[5] = 0;
+    data[6] = 0; data[7] = 0;
 }
 
 static void build_limits_frame(unsigned char *data) {
-    /* 0x356 — Charge/discharge limits */
-    unsigned short cvl = (unsigned short)(battery.charge_voltage_limit * 10.0 + 0.5);
-    unsigned short ccl = (unsigned short)(battery.charge_current_limit * 10.0 + 0.5);
-    unsigned short dcl = (unsigned short)(battery.discharge_current_limit * 10.0 + 0.5);
+    /* 0x351 — limits. Safety policy applied here:
+     *   CVL = min(BMS request, cvl_max)   [--cvl-max, default 55.4 V]
+     *   any active protection bit => CCL = DCL = 0 A (belt-and-braces
+     *   on top of the BMS zeroing its own broadcast limits).
+     * Validated on hardware: injected protection bit produced
+     * "351 [8] 2A 02 00 00 00 00 C0 01" on the wire (CVL held, limits
+     * zeroed) — see docs/TESTING.md. */
+    double cvl_v = battery.charge_voltage_limit;
+    if (cvl_v > cvl_max) cvl_v = cvl_max;
+    double ccl_a = battery.charge_current_limit;
+    double dcl_a = battery.discharge_current_limit;
+    if (battery.protection_status) { ccl_a = 0.0; dcl_a = 0.0; }
+
+    unsigned short cvl = (unsigned short)(cvl_v * 10.0 + 0.5);
+    short          ccl = (short)(ccl_a * 10.0 + 0.5);
+    short          dcl = (short)(dcl_a * 10.0 + 0.5);
     unsigned short dvl = (unsigned short)(battery.discharge_voltage_limit * 10.0 + 0.5);
 
     data[0] = cvl & 0xFF;    data[1] = (cvl >> 8) & 0xFF;
@@ -270,74 +320,141 @@ static void build_limits_frame(unsigned char *data) {
     data[6] = dvl & 0xFF;    data[7] = (dvl >> 8) & 0xFF;
 }
 
-static void build_alarms_frame(unsigned char *data) {
-    /* 0x35A — Alarms & warnings
-     *
-     * Samsung SDI 0x501 bitfield layouts (spec Rev 0.2 Table 8):
-     *   bit0 Over-Voltage        bit1 Under-Voltage
-     *   bit2 Over-Temperature    bit3 Under-Temperature
-     *   bit4 Charge Over-Current bit5 Discharge Over-Current
-     *   bit6 FET Over-Temp       bit7 Tray Voltage Imbalance
-     *   bit8 Tray-ID error       bit9 PCS comm error
-     *   bit10 FET failure        bit11 FET OT failure
-     *   bit12 UV shutdown        bit13 Cell voltage imbalance
-     *   bit14 2nd Over-Voltage
-     *
-     * Victron CAN-BMS alarm bitfield:
-     *   bit0 High voltage        bit1 Low voltage
-     *   bit2 High temperature    bit3 Low temperature
-     *   bit4 High charge current bit5 High discharge current
-     *   bit6 Internal failure    bit7 Cell imbalance
-     *
-     * Mapping: Samsung alarm bits → Victron alarm (severity 2);
-     *          Samsung protection bits → Victron warning (severity 1).
-     */
-    unsigned int a = battery.alarm_status;
-    unsigned int p = battery.protection_status;
-    unsigned short alarms = 0, warnings = 0;
-
-    /* Over-Voltage */
-    if (p & 0x0001) alarms  |= 0x01; else if (a & 0x0001) warnings |= 0x01;
-    if (p & 0x4000) alarms  |= 0x01; /* 2nd over-voltage */
-    /* Under-Voltage */
-    if (p & 0x0002) alarms  |= 0x02; else if (a & 0x0002) warnings |= 0x02;
-    if (p & 0x1000) alarms  |= 0x02; /* UV shutdown */
-    /* Over-Temperature */
-    if (p & 0x0004) alarms  |= 0x04; else if (a & 0x0004) warnings |= 0x04;
-    /* Under-Temperature */
-    if (p & 0x0008) alarms  |= 0x08; else if (a & 0x0008) warnings |= 0x08;
-    /* Charge Over-Current */
-    if (p & 0x0010) alarms  |= 0x10; else if (a & 0x0010) warnings |= 0x10;
-    /* Discharge Over-Current */
-    if (p & 0x0020) alarms  |= 0x20; else if (a & 0x0020) warnings |= 0x20;
-    /* Internal failure (FET over-temp, FET failure, tray-ID, PCS comm, etc.) */
-    if (p & (0x0040 | 0x0100 | 0x0200 | 0x0400 | 0x0800)) alarms |= 0x40;
-    else if (a & 0x0040) warnings |= 0x40;
-    /* Cell imbalance */
-    if (p & 0x2000) alarms  |= 0x80; else if (a & 0x0080) warnings |= 0x80;
-
-    data[0] = alarms & 0xFF;   data[1] = (alarms >> 8) & 0xFF;
-    data[2] = warnings & 0xFF; data[3] = (warnings >> 8) & 0xFF;
+static void build_modules_frame(unsigned char *data) {
+    /* 0x372 — module counts: online, blocking charge, blocking
+     * discharge, offline (u16 each). */
+    unsigned short on  = battery.normal_trays;
+    unsigned short off = battery.fault_trays;
+    data[0] = on & 0xFF;  data[1] = (on >> 8) & 0xFF;
+    data[2] = 0; data[3] = 0;
     data[4] = 0; data[5] = 0;
+    data[6] = off & 0xFF; data[7] = (off >> 8) & 0xFF;
+}
+
+static void build_cellinfo_frame(unsigned char *data) {
+    /* 0x373 — min/max cell voltage (u16, 1 mV) and min/max temperature
+     * (u16, Kelvin). Feeds the GX battery Details page. */
+    unsigned short vmin = (unsigned short)(battery.min_cell_v * 1000.0 + 0.5);
+    unsigned short vmax = (unsigned short)(battery.max_cell_v * 1000.0 + 0.5);
+    unsigned short tmin = (unsigned short)(battery.min_cell_temp + 273.15);
+    unsigned short tmax = (unsigned short)(battery.max_cell_temp + 273.15);
+    data[0] = vmin & 0xFF;  data[1] = (vmin >> 8) & 0xFF;
+    data[2] = vmax & 0xFF;  data[3] = (vmax >> 8) & 0xFF;
+    data[4] = tmin & 0xFF;  data[5] = (tmin >> 8) & 0xFF;
+    data[6] = tmax & 0xFF;  data[7] = (tmax >> 8) & 0xFF;
+}
+
+static void build_name_frame(unsigned char *data) {
+    /* 0x35E — product name, 8 ASCII bytes */
+    memcpy(data, "SDI 482 ", 8);
+}
+
+static void build_info_frame(unsigned char *data) {
+    /* 0x35F — model tag, protocol rev, capacity (Ah) */
+    unsigned short cap = (unsigned short)(capacity_ah + 0.5);
+    data[0] = 0x82; data[1] = 0x04;      /* model tag 0x0482 */
+    data[2] = 0x02; data[3] = 0x00;      /* spec rev 0.2 */
+    data[4] = cap & 0xFF; data[5] = (cap >> 8) & 0xFF;
     data[6] = 0; data[7] = 0;
 }
+
+static void build_alarms_frame(unsigned char *data) {
+    /* 0x35A — alarms (bytes 0-3) and warnings (bytes 4-7).
+     *
+     * Wire format: 2-bit flag PAIRS (01 = active, 00 = inactive), not
+     * plain bitmasks — verified on live hardware: an injected 0x501
+     * over-temperature bit with this encoding produced a correctly
+     * named "High Temperature" GX notification (docs/TESTING.md).
+     *
+     * Samsung 0x501 bit layout (spec Rev 0.2 Table 8): bit0 OV, bit1 UV,
+     * bit2 OT, bit3 UT, bit4 chg-OC, bit5 dch-OC, bit6 FET OT, bit7 tray
+     * imbalance; protection high byte: bit8 tray-ID, bit9 PCS comm,
+     * bit10 FET fail, bit11 FET-OT fail, bit12 UV shutdown, bit13 cell
+     * imbalance, bit14 2nd OV.
+     *
+     * Severity: Samsung ALARM bits (BMS warning, FETs still closed) map
+     * to Victron WARNINGS; Samsung PROTECTION bits (BMS has acted) map
+     * to Victron ALARMS. */
+    unsigned int a = battery.alarm_status;
+    unsigned int p = battery.protection_status;
+    memset(data, 0, 8);
+
+    /* Victron flag positions: (byte offset within half) * 8 + bit of
+     * the pair's low bit. Base 0 = alarms, base 4 = warnings. */
+#define VF_GENERAL        0
+#define VF_HIGH_VOLTAGE   2
+#define VF_LOW_VOLTAGE    4
+#define VF_HIGH_TEMP      6
+#define VF_LOW_TEMP       8
+#define VF_HIGH_CHG_TEMP 10
+#define VF_LOW_CHG_TEMP  12
+#define VF_HIGH_CURRENT  14   /* discharge over-current */
+#define VF_HIGH_CHG_CUR  16
+#define VF_CONTACTOR     18
+#define VF_SHORT_CIRCUIT 20
+#define VF_BMS_INTERNAL  22
+#define VF_CELL_IMBAL    24
+#define SET_FLAG(base, f) (data[(base) + ((f) >> 3)] |= \
+                           (unsigned char)(0x01 << ((f) & 7)))
+
+    /* warnings from alarm bits */
+    if (a & 0x0001) SET_FLAG(4, VF_HIGH_VOLTAGE);
+    if (a & 0x0002) SET_FLAG(4, VF_LOW_VOLTAGE);
+    if (a & 0x0004) SET_FLAG(4, VF_HIGH_TEMP);
+    if (a & 0x0008) SET_FLAG(4, VF_LOW_TEMP);
+    if (a & 0x0010) SET_FLAG(4, VF_HIGH_CHG_CUR);
+    if (a & 0x0020) SET_FLAG(4, VF_HIGH_CURRENT);
+    if (a & 0x0040) SET_FLAG(4, VF_BMS_INTERNAL);
+    if (a & 0x0080) SET_FLAG(4, VF_CELL_IMBAL);
+
+    /* alarms from protection bits */
+    if (p & 0x0001) SET_FLAG(0, VF_HIGH_VOLTAGE);
+    if (p & 0x4000) SET_FLAG(0, VF_HIGH_VOLTAGE);  /* 2nd OV */
+    if (p & 0x0002) SET_FLAG(0, VF_LOW_VOLTAGE);
+    if (p & 0x1000) SET_FLAG(0, VF_LOW_VOLTAGE);   /* UV shutdown */
+    if (p & 0x0004) SET_FLAG(0, VF_HIGH_TEMP);
+    if (p & 0x0008) SET_FLAG(0, VF_LOW_TEMP);
+    if (p & 0x0010) SET_FLAG(0, VF_HIGH_CHG_CUR);
+    if (p & 0x0020) SET_FLAG(0, VF_HIGH_CURRENT);
+    if (p & 0x2000) SET_FLAG(0, VF_CELL_IMBAL);    /* cell imbalance */
+    if (p & 0x0080) SET_FLAG(0, VF_CELL_IMBAL);    /* tray imbalance */
+    if (p & (0x0040 | 0x0100 | 0x0200 | 0x0400 | 0x0800))
+        SET_FLAG(0, VF_BMS_INTERNAL);
+    if (p) SET_FLAG(0, VF_GENERAL);
+
+#undef SET_FLAG
+}
+
+#ifndef UNIT_TEST
 
 /* ─── Victron frame transmission ──────────────────────────────────────── */
 
 static void send_victron_frames(int can_fd) {
     unsigned char buf[8];
 
-    build_state_frame(buf);
-    can_send(can_fd, VC_CAN_ID_STATE, buf, 8);
+    build_limits_frame(buf);
+    can_send(can_fd, VC_CAN_ID_LIMITS, buf, 8);
 
     build_soc_soh_frame(buf);
     can_send(can_fd, VC_CAN_ID_SOC_SOH, buf, 8);
 
-    build_limits_frame(buf);
-    can_send(can_fd, VC_CAN_ID_LIMITS, buf, 8);
+    build_state_frame(buf);
+    can_send(can_fd, VC_CAN_ID_STATE, buf, 6);
 
     build_alarms_frame(buf);
     can_send(can_fd, VC_CAN_ID_ALARMS, buf, 8);
+
+    build_modules_frame(buf);
+    can_send(can_fd, VC_CAN_ID_MODULES, buf, 8);
+
+    build_cellinfo_frame(buf);
+    can_send(can_fd, VC_CAN_ID_CELLINFO, buf, 8);
+
+    build_name_frame(buf);
+    can_send(can_fd, VC_CAN_ID_NAME, buf, 8);
+
+    build_info_frame(buf);
+    can_send(can_fd, VC_CAN_ID_INFO, buf, 8);
 }
 
 /* ─── CAN open / read / send ──────────────────────────────────────────── */
@@ -406,6 +523,7 @@ static void sig_handler(int sig) {
 /* ─── Main ────────────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
+    int argi;
     if (argc < 2) {
         fprintf(stderr,
                 "Usage: %s <can-interface>\n\n"
@@ -413,8 +531,41 @@ int main(int argc, char **argv) {
                 "Translates Samsung SDI CAN PDOs (0x500-0x504, 0x5F0-0x5F4)\n"
                 "into Victron CAN-bus BMS frames (0x351, 0x355, 0x356, 0x35A).\n\n"
                 "The stock Venus OS CAN-BMS driver picks up the translated\n"
-                "frames and publishes to D-Bus.  No custom D-Bus code needed.\n",
-                argv[0]);
+                "frames and publishes to D-Bus.  No custom D-Bus code needed.\n\n"
+                "Options:\n"
+                "  --cvl-max <V>      charge-voltage ceiling (default %.1f)\n"
+                "  --capacity-ah <Ah> bank capacity (default %.0f; 10 modules = 940)\n"
+                "  --timeout <s>      suspend TX after this silence (default %d)\n",
+                argv[0], DEFAULT_CVL_MAX, BATTERY_CAPACITY_AH,
+                DATA_TIMEOUT_SEC);
+        return 1;
+    }
+
+    for (argi = 2; argi < argc; argi++) {
+        if (!strcmp(argv[argi], "--cvl-max") && argi + 1 < argc)
+            cvl_max = atof(argv[++argi]);
+        else if (!strcmp(argv[argi], "--capacity-ah") && argi + 1 < argc)
+            capacity_ah = atof(argv[++argi]);
+        else if (!strcmp(argv[argi], "--timeout") && argi + 1 < argc)
+            timeout_sec = atoi(argv[++argi]);
+        else {
+            fprintf(stderr, "unknown option: %s\n", argv[argi]);
+            return 1;
+        }
+    }
+    if (cvl_max < 40.0 || cvl_max > 58.1) {
+        fprintf(stderr, "--cvl-max %.1f outside sane range 40.0-58.1 V\n",
+                cvl_max);
+        return 1;
+    }
+    if (capacity_ah < 10.0 || capacity_ah > 3000.0) {
+        fprintf(stderr, "--capacity-ah %.0f outside sane range 10-3000\n",
+                capacity_ah);
+        return 1;
+    }
+    if (timeout_sec < 2 || timeout_sec > 60) {
+        fprintf(stderr, "--timeout %d outside sane range 2-60 s\n",
+                timeout_sec);
         return 1;
     }
 
@@ -441,11 +592,14 @@ int main(int argc, char **argv) {
         struct can_frame frame;
         int ret = can_recv(can_fd, &frame, 1000);
         if (ret <= 0) {
-            /* No CAN traffic — mark stale after timeout */
+            /* No CAN traffic — TX is already implicitly suspended
+             * (frames are only sent on 0x500 receipt); log the
+             * transition once. Venus raises BMS-lost from the silence. */
             if (data_valid &&
-                time(NULL) - battery.last_update > DATA_TIMEOUT_SEC) {
+                time(NULL) - battery.last_update > timeout_sec) {
                 data_valid = 0;
-                printf("samsung-sdi-bms: data timeout, stopping translation\n");
+                printf("samsung-sdi-bms: data timeout, translation "
+                       "suspended (Venus will raise BMS-lost)\n");
             }
             continue;
         }
@@ -460,12 +614,15 @@ int main(int argc, char **argv) {
             switch (frame.can_id) {
             case SDI_CAN_ID_STATUS:
                 parse_status(frame.data);
+                battery.rx_status = time(NULL);
                 break;
             case SDI_CAN_ID_CONFIG:
                 parse_config(frame.data);
+                battery.rx_config = time(NULL);
                 break;
             case SDI_CAN_ID_LIMITS:
                 parse_limits(frame.data);
+                battery.rx_limits = time(NULL);
                 break;
             case SDI_CAN_ID_CELL_VOLTAGE:
                 parse_cell_voltage(frame.data);
@@ -494,14 +651,20 @@ int main(int argc, char **argv) {
 
         battery.last_update = time(NULL);
 
-        /* Translate and send Victron frames after receiving the status
-         * message (0x500) which carries the most critical data. */
+        /* Translate on each 0x500 (the battery's ~500 ms cadence), but
+         * ONLY while status+config+limits are all fresh: translating
+         * from a partial picture would emit zero/stale limits. If any
+         * critical frame stops, TX suspends and the stock Venus driver
+         * raises its native BMS-lost alarm (#67). */
         if (frame.can_id == SDI_CAN_ID_STATUS) {
-            if (!data_valid) {
-                data_valid = 1;
-                printf("samsung-sdi-bms: data received, translating...\n");
+            if (data_fresh(time(NULL))) {
+                if (!data_valid) {
+                    data_valid = 1;
+                    printf("samsung-sdi-bms: data complete, translating "
+                           "(CVL ceiling %.1f V)...\n", cvl_max);
+                }
+                send_victron_frames(can_fd);
             }
-            send_victron_frames(can_fd);
         }
     }
 
@@ -509,3 +672,129 @@ int main(int argc, char **argv) {
     if (can_fd >= 0) close(can_fd);
     return 0;
 }
+
+#else  /* ─────────────────────────── UNIT_TEST ─────────────────────────── */
+
+/* Build:  gcc -D_GNU_SOURCE -DUNIT_TEST -Os -Wall -Wextra -std=c99 \
+ *              -o samsung-sdi-bms-test src/samsung-sdi-bms.c && ./samsung-sdi-bms-test
+ * Frame vectors marked "real capture" were recorded from a live
+ * ELPM482-00005 on a Cerbo GX MK2 (Venus OS v3.70), 2026-03/07. */
+
+static int failures = 0;
+#define CHECK(cond, msg) do { \
+    if (!(cond)) { printf("FAIL: %s\n", msg); failures++; } \
+    else         { printf("ok:   %s\n", msg); } } while (0)
+
+static int feq(double x, double y) { return x - y < 1e-6 && y - x < 1e-6; }
+
+int main(void) {
+    memset(&battery, 0, sizeof(battery));
+    unsigned char buf[8];
+
+    /* real capture: 0x504 = 32 13 32 13 1D 1D 1D 00 */
+    unsigned char t504[8] = {0x32,0x13,0x32,0x13,0x1D,0x1D,0x1D,0x00};
+    parse_temperature(t504);
+    CHECK(feq(battery.max_tray_v, 49.14), "0x504 max tray 49.14 V (real capture)");
+    CHECK(feq(battery.avg_cell_temp, 29.0), "0x504 avg temp 29 C");
+
+    unsigned char t500[8] = {0x32,0x13, 0xFD,0xFF, 13, 100, 0x34,0x12};
+    parse_status(t500);
+    CHECK(feq(battery.voltage, 49.14), "0x500 voltage 49.14 V");
+    CHECK(feq(battery.current, -3.0),  "0x500 current -3 A (S16)");
+    CHECK(feq(battery.soc, 13.0),      "0x500 SOC 13%");
+
+    unsigned char t502[8] = {0x45,0x02, 0xD6,0x01, 0xD6,0x01, 0xC0,0x01};
+    parse_limits(t502);
+    CHECK(feq(battery.charge_voltage_limit, 58.1), "0x502 CVL 58.1 V");
+    CHECK(feq(battery.charge_current_limit, 47.0), "0x502 CCL 47.0 A");
+
+    unsigned char t503[8] = {0xC0,0x0D, 0xC2,0x0D, 0xBE,0x0D, 0x32,0x13};
+    parse_cell_voltage(t503);
+    CHECK(feq(battery.max_cell_v, 3.522), "0x503 max cell 3.522 V");
+    CHECK(feq(battery.min_cell_v, 3.518), "0x503 min cell 3.518 V");
+
+    /* real capture: 0x5F0 = 01 00 C0 0D C1 0D C2 0D */
+    unsigned char t5f0[8] = {0x01,0x00,0xC0,0x0D,0xC1,0x0D,0xC2,0x0D};
+    parse_cell_frame(0, t5f0, 8);
+    CHECK(feq(battery.cell_v[0], 3.520) && battery.cell_v_valid[0],
+          "0x5F0 cell 1 = 3.520 V (real capture)");
+    unsigned char t5f4[8] = {0x01,0x00,0xB0,0x0D,0xB1,0x0D,0x00,0x00};
+    parse_cell_frame(12, t5f4, 8);
+    CHECK(feq(battery.cell_v[13], 3.505), "0x5F4 cell 14 = 3.505 V");
+    CHECK(!battery.cell_v_valid[12] || battery.cell_v[12] > 0,
+          "0x5F4 zero padding not stored as a cell");
+
+    unsigned char t501[8] = {0x01,0x00, 0x00,0x10, 1, 1, 0, 0};
+    parse_config(t501);
+    CHECK(battery.alarm_status == 0x0001,      "0x501 alarm bits");
+    CHECK(battery.protection_status == 0x1000, "0x501 protection bits");
+
+    /* ── frame ID semantics: the bug this PR fixes ── */
+    CHECK(VC_CAN_ID_LIMITS == 0x351, "0x351 is LIMITS (was mis-assigned STATE)");
+    CHECK(VC_CAN_ID_STATE  == 0x356, "0x356 is STATE (was mis-assigned LIMITS)");
+
+    /* ── 0x351: CVL clamped, protection forces 0 A ── */
+    build_limits_frame(buf);
+    CHECK(u16_le(buf, 0) == 554, "0x351 CVL clamped 58.1 -> 55.4 V");
+    CHECK(u16_le(buf, 2) == 0 && u16_le(buf, 4) == 0,
+          "0x351 CCL/DCL forced to 0 A while protection active");
+    CHECK(u16_le(buf, 6) == 448, "0x351 DVL 44.8 V passthrough");
+    battery.protection_status = 0;
+    build_limits_frame(buf);
+    CHECK(u16_le(buf, 2) == 470, "0x351 CCL 47.0 A when no protection");
+
+    /* ── 0x355: 1 % scale (0.1 % would show 11 % as 110 %) ── */
+    build_soc_soh_frame(buf);
+    CHECK(u16_le(buf, 0) == 13, "0x355 SOC u16 at 1% (13, not 130)");
+
+    /* ── 0x356: V/I/T ── */
+    build_state_frame(buf);
+    CHECK(u16_le(buf, 0) == 4914, "0x356 voltage 0.01 V scale");
+    CHECK(s16_le(buf, 2) == -30,  "0x356 current 0.1 A, sign kept");
+    CHECK(s16_le(buf, 4) == 290,  "0x356 temperature 0.1 C");
+
+    /* ── 0x35A: 2-bit pair positions (hardware-validated encoding) ── */
+    battery.alarm_status = 0x0004;      /* OT warning */
+    battery.protection_status = 0;
+    build_alarms_frame(buf);
+    CHECK(buf[4] == 0x40 && buf[0] == 0,
+          "0x35A OT alarm-bit -> warning pair (byte 4, bits 6-7)");
+    battery.alarm_status = 0;
+    battery.protection_status = 0x0004; /* OT protection */
+    build_alarms_frame(buf);
+    CHECK((buf[0] & 0x40) && (buf[0] & 0x01),
+          "0x35A OT protection -> alarm pair + general alarm");
+    battery.protection_status = 0x1000; /* UV shutdown */
+    build_alarms_frame(buf);
+    CHECK(buf[0] & 0x10, "0x35A UV shutdown -> low-voltage alarm pair");
+
+    /* ── extended frames: 0x373 / 0x372 / 0x35E / 0x35F ── */
+    battery.min_cell_v = 3.518; battery.max_cell_v = 3.522;
+    battery.min_cell_temp = 29; battery.max_cell_temp = 29;
+    build_cellinfo_frame(buf);
+    CHECK(u16_le(buf, 0) == 3518 && u16_le(buf, 2) == 3522,
+          "0x373 min/max cell in mV");
+    CHECK(u16_le(buf, 4) == 302, "0x373 min temp in Kelvin (29C -> 302K)");
+    battery.normal_trays = 1; battery.fault_trays = 0;
+    build_modules_frame(buf);
+    CHECK(u16_le(buf, 0) == 1 && u16_le(buf, 6) == 0,
+          "0x372 modules online/offline");
+    build_name_frame(buf);
+    CHECK(buf[0] == 'S' && buf[7] == ' ', "0x35E product name");
+    build_info_frame(buf);
+    CHECK(u16_le(buf, 4) == 94, "0x35F capacity from --capacity-ah default");
+
+    /* ── freshness gate ── */
+    time_t now = time(NULL);
+    battery.rx_status = now; battery.rx_config = now; battery.rx_limits = now;
+    CHECK(data_fresh(now), "fresh when all three critical frames recent");
+    battery.rx_limits = now - timeout_sec - 1;
+    CHECK(!data_fresh(now), "NOT fresh when limits frames stop (partial failure)");
+    battery.rx_limits = 0;
+    CHECK(!data_fresh(now), "NOT fresh before limits ever received (startup)");
+
+    printf(failures ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", failures);
+    return failures ? 1 : 0;
+}
+
+#endif /* UNIT_TEST */
