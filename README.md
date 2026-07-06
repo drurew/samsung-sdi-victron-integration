@@ -126,7 +126,8 @@ See [docs/INSTALL.md](docs/INSTALL.md) for detailed installation instructions.
 ├── docs/
 │   ├── INSTALL.md                  # Installation guide
 │   ├── TROUBLESHOOTING.md          # Troubleshooting guide
-│   ├── DBUS_BATTERY_SPEC.md        # Venus OS D-Bus battery service specification
+│   ├── VENUS_OS_DBUS_API.md        # Complete Venus OS D-Bus API reference
+│   ├── DBUS_BATTERY_SPEC.md        # Battery service specification
 │   ├── CAN_BMS_PROTOCOL.md         # Victron CAN-BMS protocol spec
 │   └── SAMSUNG_TO_VICTRON_MAPPING.md  # Samsung SDI -> Victron field mapping
 └── scripts/
