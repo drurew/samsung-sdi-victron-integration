@@ -268,7 +268,9 @@ static int can_recv(int fd, struct can_frame *frame, int timeout_ms) {
     struct pollfd pfd = {.fd = fd, .events = POLLIN};
     int ret = poll(&pfd, 1, timeout_ms);
     if (ret <= 0) return ret;
-    return read(fd, frame, sizeof(*frame));
+    ssize_t n = read(fd, frame, sizeof(*frame));
+    /* A partial read is not a usable frame - treat as no data. */
+    return (n == (ssize_t)sizeof(*frame)) ? (int)n : 0;
 }
 
 /* ─── D-Bus low-level wire protocol ───────────────────────────────────── */
@@ -511,7 +513,18 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        /* Only process known Samsung SDI CAN IDs */
+        /* Only process known Samsung SDI CAN IDs, and only frames
+         * long enough to hold the fields we read (0x500-0x503 need 8
+         * bytes, 0x504 needs 7). Short frames would silently parse
+         * stale buffer bytes as data. */
+        {
+            static const unsigned char min_dlc[5] = {8, 8, 8, 8, 7};
+            if (frame.can_id >= SDI_CAN_ID_STATUS &&
+                frame.can_id <= SDI_CAN_ID_TEMPERATURE &&
+                frame.can_dlc <
+                    min_dlc[frame.can_id - SDI_CAN_ID_STATUS])
+                continue;
+        }
         switch (frame.can_id) {
         case SDI_CAN_ID_STATUS:       parse_status(frame.data);       break;
         case SDI_CAN_ID_CONFIG:       parse_config(frame.data);       break;
