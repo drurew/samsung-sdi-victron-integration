@@ -174,6 +174,8 @@ class SamsungSDIMonitor:
             max_cell_temperature = self.sdi_client.get_max_cell_temperature()
             charge_current_limit = self.sdi_client.get_charge_current_limit()
             discharge_current_limit = self.sdi_client.get_discharge_current_limit()
+            alarm_bits = self.sdi_client.get_alarm_status() or 0
+            protection_bits = self.sdi_client.get_protection_status() or 0
 
             if voltage is None or current is None or soc is None:
                 logger.warning(f"System {self.system_id}: Incomplete data received")
@@ -190,7 +192,9 @@ class SamsungSDIMonitor:
                 'min_cell_temperature': min_cell_temperature,
                 'max_cell_temperature': max_cell_temperature,
                 'charge_current_limit': charge_current_limit,
-                'discharge_current_limit': discharge_current_limit
+                'discharge_current_limit': discharge_current_limit,
+                'alarm_bits': int(alarm_bits),
+                'protection_bits': int(protection_bits)
             }
 
             # Update D-Bus
@@ -204,8 +208,64 @@ class SamsungSDIMonitor:
             logger.error(f"System {self.system_id}: Update error: {e}")
             return False
 
+
+    # Samsung 0x501 bit positions (spec Rev 0.2 Table 8), shared by the
+    # alarm bitfield (bytes 0-1) and protection bitfield (bytes 2-3):
+    #   bit0 Over-Voltage        bit1 Under-Voltage
+    #   bit2 Over-Temperature    bit3 Under-Temperature
+    #   bit4 Charge Over-Current bit5 Discharge Over-Current
+    #   bit6 FET Over-Temp       bit7 Tray Voltage Imbalance
+    # Protection high byte: bit8 Tray-ID err, bit9 PCS comm, bit10 FET
+    # failure, bit11 FET OT failure, bit12 UV shutdown, bit13 cell
+    # imbalance, bit14 2nd Over-Voltage.
+    _ALARM_BIT_PATHS = {
+        0: '/Alarms/HighVoltage',
+        1: '/Alarms/LowVoltage',
+        2: '/Alarms/HighTemperature',
+        3: '/Alarms/LowTemperature',
+        4: '/Alarms/HighChargeCurrent',
+        5: '/Alarms/HighDischargeCurrent',
+        6: '/Alarms/InternalFailure',
+        7: '/Alarms/CellImbalance',
+    }
+    _PROTECTION_EXTRA_PATHS = {
+        12: '/Alarms/LowVoltage',      # UV shutdown
+        13: '/Alarms/CellImbalance',   # cell voltage imbalance
+        14: '/Alarms/HighVoltage',     # 2nd over-voltage
+    }
+
+    def _update_alarms(self, alarm_bits: int, protection_bits: int):
+        """Map 0x501 bitfields to /Alarms/* paths.
+
+        Victron convention: 0 = OK, 1 = warning, 2 = alarm. Samsung
+        alarm bits (BMS warning, FETs still closed) map to 1; protection
+        bits (BMS has acted) map to 2 on the same categories. Any
+        protection high-byte condition also raises InternalFailure.
+        Writes only on change to avoid D-Bus churn.
+        """
+        if self.dbus_service is None:
+            return
+        values = {path: 0 for path in self._ALARM_BIT_PATHS.values()}
+        for bit, path in self._ALARM_BIT_PATHS.items():
+            if alarm_bits & (1 << bit):
+                values[path] = max(values[path], 1)
+            if protection_bits & (1 << bit):
+                values[path] = max(values[path], 2)
+        for bit, path in self._PROTECTION_EXTRA_PATHS.items():
+            if protection_bits & (1 << bit):
+                values[path] = max(values[path], 2)
+        if protection_bits & 0x7F00:
+            values['/Alarms/InternalFailure'] = 2
+        cache = getattr(self, '_alarm_cache', {})
+        for path, value in values.items():
+            if cache.get(path) != value:
+                self.dbus_service[path] = value
+        self._alarm_cache = values
+
     def _update_dbus(self, system_data: Dict[str, Any]):
         """Update D-Bus paths with Samsung SDI system data"""
+        self._update_alarms(system_data.get('alarm_bits', 0),
+                            system_data.get('protection_bits', 0))
         try:
             # Essential battery data
             if 'voltage' in system_data:
