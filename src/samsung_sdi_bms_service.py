@@ -69,6 +69,7 @@ class SamsungSDIMonitor:
         self.dbus_service: Optional[VeDbusService] = None
         self.last_update = 0
         self.last_update = 0
+        self._connected = True  # mirrors /Connected; see _set_connected()
         self.firmware_updater = None
 
     def setup_dbus(self) -> bool:
@@ -160,6 +161,30 @@ class SamsungSDIMonitor:
             logger.error(f"Node {self.system_id}: Failed to initialize D-Bus service: {e}")
             return False
 
+    def _set_connected(self, connected: bool):
+        """Reflect the CAN link state on D-Bus.
+
+        Without this, the last published values persist indefinitely on
+        CAN loss and the GX keeps showing a stale-but-live-looking
+        battery (issue #19). While disconnected, charge/discharge
+        current limits are forced to 0 A so nothing keeps acting on
+        stale limits.
+        """
+        if self.dbus_service is None or self._connected == connected:
+            return
+        self._connected = connected
+        if connected:
+            self.dbus_service['/Connected'] = 1
+            logger.info(f"System {self.system_id}: CAN data restored - "
+                        f"battery reconnected on D-Bus")
+        else:
+            self.dbus_service['/Connected'] = 0
+            self.dbus_service['/Info/MaxChargeCurrent'] = 0.0
+            self.dbus_service['/Info/MaxDischargeCurrent'] = 0.0
+            logger.warning(f"System {self.system_id}: CAN data stale - "
+                           f"marking battery disconnected on D-Bus and "
+                           f"forcing charge/discharge limits to 0 A")
+
     def update(self) -> bool:
         """Update Samsung SDI system data"""
         try:
@@ -179,6 +204,7 @@ class SamsungSDIMonitor:
 
             if voltage is None or current is None or soc is None:
                 logger.warning(f"System {self.system_id}: Incomplete data received")
+                self._set_connected(False)
                 return False
 
             # Create data dict for D-Bus update
@@ -199,6 +225,7 @@ class SamsungSDIMonitor:
 
             # Update D-Bus
             if self.dbus_service:
+                self._set_connected(True)
                 self._update_dbus(system_data)
 
             self.last_update = time.time()
