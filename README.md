@@ -125,8 +125,9 @@ See [docs/INSTALL.md](docs/INSTALL.md) for detailed installation instructions.
 │   └── samsung_sdi_can_client.py   # CAN client library
 ├── docs/
 │   ├── INSTALL.md                  # Installation guide
-│   ├── README.md                   # Technical overview
-│   └── TROUBLESHOOTING.md          # Troubleshooting guide
+│   ├── TROUBLESHOOTING.md          # Troubleshooting guide
+│   ├── CAN_BMS_PROTOCOL.md         # Victron CAN-BMS protocol spec
+│   └── SAMSUNG_TO_VICTRON_MAPPING.md  # Samsung SDI -> Victron field mapping
 └── scripts/
     ├── install-to-cerbo.sh         # One-command deployment
     ├── install.sh                  # Venus OS package installer
