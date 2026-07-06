@@ -132,6 +132,9 @@ ceasing transmission during a fault condition is sufficient to halt charging.
 
 - Victron Battery Compatibility documentation:
   <https://www.victronenergy.com/live/battery_compatibility:start>
+- Full D-Bus battery service specification: [DBUS_BATTERY_SPEC.md](DBUS_BATTERY_SPEC.md)
 - Samsung SDI ELPM482-00005 Product Specification Rev 0.2
 - Community CAN-BMS reverse engineering: Victron Community forums,
   SimpBMS, REC BMS, and Pylontech integration projects.
+- Verified against live Venus OS v3.71 on Cerbo GX with source-level
+  confirmation from `dbus-systemcalc-py` (`dummycanbms.py`, `batteryservice.py`).
