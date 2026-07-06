@@ -45,9 +45,13 @@ dbus -y com.victronenergy.battery.samsung_sdi /Info/MaxChargeCurrent GetValue
 ```
 Samsung SDI ELPM482-00005 ── CAN 2.0A (500 kbps) ── samsung-sdi-bms (C)
                                                                    │
+                                              Victron CAN-BMS frames
+                                              (0x351, 0x355, 0x356, 0x35A)
+                                                                   │
+                                                         Victron can-bus-bms
+                                                         (stock Venus OS driver)
+                                                                   │
                                                            Victron D-Bus
-                                                           com.victronenergy
-                                                           .battery.samsung_sdi
                                                                    │
                                                             DVCC / SystemCalc
                                                                    │
@@ -57,8 +61,10 @@ Samsung SDI ELPM482-00005 ── CAN 2.0A (500 kbps) ── samsung-sdi-bms (C)
 ```
 
 The Samsung SDI BMS broadcasts all data on fixed CAN IDs at 500 ms intervals.
-The driver listens passively, parses each message, and publishes updated
-values to D-Bus. No polling requests are sent to the battery.
+The translator listens passively, parses each message, and re-emits the data
+as Victron CAN-bus BMS frames on the same interface. The stock Venus OS CAN-BMS
+driver picks up the translated frames and handles all D-Bus publishing. No
+SDO requests are sent to the battery.
 
 ## CAN Protocol
 
@@ -139,6 +145,20 @@ See [docs/INSTALL.md](docs/INSTALL.md) for detailed installation instructions.
 ### Python Driver
 - Python 3.7+
 - python-can, dbus-python, pygobject
+
+## Acknowledgments
+
+- **XOThermite** — diagnosed all five defects in the C driver's D-Bus layer and
+  proposed the CAN-BMS protocol translator approach (issue #15); provided the
+  spec-corrected 0x504 tray-voltage and 0x5F0-0x5F4 cell-voltage definitions
+  with attached patch (issue #18); contributed alarm/protection sourcing from
+  0x501 (PR #25), alarm publishing to D-Bus (PR #24), stale-data disconnected
+  state (PR #23), battery constant corrections (PR #26), and frame-length
+  validation (PR #27). All changes tested against a real ELPM482-00005 on a
+  Cerbo GX running Venus OS v3.70.
+- This project traces its lineage to the original Samsung SDI CAN reverse
+  engineering work by the Victron Community, the Super-B BMS integration by
+  drurew, and the Venus OS driver patterns established by Louis van der Walt.
 
 ## License
 
