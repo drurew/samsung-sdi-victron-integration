@@ -130,6 +130,12 @@ typedef struct {
 static battery_state battery;
 static int           battery_connected = 0;
 
+/* ─── Battery constants (ELPM482-00005, spec Rev 0.2 Table 4) ─────────── */
+
+#define BATTERY_CAPACITY_AH  94.0   /* was 150.0 (Super-B Epsilon leftover) */
+#define CELLS_PER_MODULE     14     /* 14S; was 26 (Super-B leftover)       */
+#define DEVICE_INSTANCE      280    /* matches the Python driver's default  */
+
 /* ─── PDO message parsers ─────────────────────────────────────────────── */
 
 static void parse_status(const unsigned char *data) {
@@ -186,10 +192,10 @@ static void publish_all(void) {
     }
 
     dbus_emit_property("/", "", "Soc",     'd', &battery.soc);
-    dbus_emit_property("/", "", "Capacity", 'd', &(double){150.0});
-    dbus_emit_property("/", "", "InstalledCapacity", 'd', &(double){150.0});
+    dbus_emit_property("/", "", "Capacity", 'd', &(double){BATTERY_CAPACITY_AH});
+    dbus_emit_property("/", "", "InstalledCapacity", 'd', &(double){BATTERY_CAPACITY_AH});
 
-    double consumed = 150.0 * (100.0 - battery.soc) / 100.0;
+    double consumed = BATTERY_CAPACITY_AH * (100.0 - battery.soc) / 100.0;
     dbus_emit_property("/", "", "ConsumedAmphours", 'd', &consumed);
 
     dbus_emit_property("/", "Dc/0", "Voltage",     'd', &battery.voltage);
@@ -490,8 +496,8 @@ int main(int argc, char **argv) {
     dbus_emit_property("/", "Mgmt", "Connection", 's',
                        "CAN PDO 500kbps");
     dbus_emit_property("/", "System", "NrOfCellsPerBattery", 'i',
-                       &(int){26});
-    dbus_emit_property("/", "", "DeviceInstance", 'i', &(int){1});
+                       &(int){CELLS_PER_MODULE});
+    dbus_emit_property("/", "", "DeviceInstance", 'i', &(int){DEVICE_INSTANCE});
 
     printf("samsung-sdi-bms: running, listening for PDOs\n");
 
