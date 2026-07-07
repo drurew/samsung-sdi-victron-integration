@@ -1,6 +1,6 @@
 # Venus OS D-Bus API Reference
 
-Complete D-Bus interface reference for Victron Venus OS (tested on v3.71,
+Complete D-Bus interface reference for Victron Venus OS (tested on v3.75,
 Cerbo GX). Extracted from live hardware introspection and cross-referenced
 with Victron's own source code (`dbus-systemcalc-py`).
 
@@ -510,7 +510,7 @@ System-wide persistent configuration. Key paths relevant to battery integration:
 
 ## References
 
-- Venus OS v3.71 on Cerbo GX, live introspection of all services
+- Venus OS v3.75 on Cerbo GX, live introspection of all services
 - `dbus-systemcalc-py` source: `victronenergy/dbus-systemcalc-py` on GitHub
   - `delegates/batteryservice.py` — BMS detection and path subscription
   - `delegates/dvcc.py` — DVCC control logic

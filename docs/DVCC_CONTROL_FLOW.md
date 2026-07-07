@@ -2,7 +2,7 @@
 
 How Distributed Voltage and Current Control (DVCC) propagates battery
 limits through Venus OS to chargers and inverters. Documented from live
-observation on Venus OS v3.71 with SuperB Epsilon V2 BMS, MultiPlus-II,
+observation on Venus OS v3.75 with SuperB Epsilon V2 BMS, MultiPlus-II,
 and MPPT 100/30.
 
 ## Architecture
@@ -26,7 +26,7 @@ and MPPT 100/30.
   └──────────┘  └───────────┘
 ```
 
-## Live measurement snapshot (2026-07-07, Venus OS v3.71)
+## Live measurement snapshot (2026-07-07, Venus OS v3.75)
 
 ### 1. BMS publishes limits
 

@@ -1,7 +1,7 @@
 # Venus OS Settings Service Reference
 
 Key D-Bus settings paths for battery integration and DVCC control.
-Documented from live observation on Venus OS v3.71.
+Documented from live observation on Venus OS v3.75.
 
 ## Service
 
@@ -87,7 +87,7 @@ The Victron CAN-bus BMS service is the bridge between the CAN frames
 (0x351/0x355/0x356/0x35A/0x372/0x373/0x35E/0x35F) and D-Bus. It lives
 at `/opt/victronenergy/can-bus-bms/can-bus-bms` on Venus OS.
 
-## Binary analysis (v3.71, 112,912 bytes)
+## Binary analysis (v3.75, 112,912 bytes)
 
 Strings extracted from the binary reveal the full set of D-Bus paths
 the service publishes, going beyond what community documentation

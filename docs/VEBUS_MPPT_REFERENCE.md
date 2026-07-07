@@ -1,7 +1,7 @@
 # Venus OS VE.Bus Service (MultiPlus/Quattro) Reference
 
 D-Bus interface for Victron MultiPlus and Quattro inverter/chargers.
-Documented from live observation on Venus OS v3.71, MultiPlus-II 48/3000.
+Documented from live observation on Venus OS v3.75, MultiPlus-II 48/3000.
 
 ## Service
 
@@ -174,7 +174,7 @@ accounts for it in its charge calculations.
 # Venus OS Solar Charger Service (MPPT) Reference
 
 D-Bus interface for Victron MPPT solar charge controllers.
-Documented from live observation on Venus OS v3.71, SmartSolar MPPT 100/30.
+Documented from live observation on Venus OS v3.75, SmartSolar MPPT 100/30.
 
 ## Service
 

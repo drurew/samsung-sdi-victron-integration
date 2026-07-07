@@ -1,7 +1,7 @@
 # Victron Venus OS Battery Service D-Bus Specification
 
 Authoritative reference for the D-Bus interface a battery service must implement
-to integrate with Victron Venus OS (tested on v3.71). Extracted from live Cerbo GX
+to integrate with Victron Venus OS (tested on v3.75). Extracted from live Cerbo GX
 hardware and Victron's own source code (`dbus-systemcalc-py`, `dummycanbms.py`,
 `batteryservice.py`).
 
@@ -191,5 +191,5 @@ derived):
   - `delegates/batteryservice.py` — path subscription list
   - `scripts/dummycanbms.py` — CAN-BMS test harness with full path set
   - `scripts/proxybattery.py` — battery proxy service
-- Live Cerbo GX running Venus OS v3.71 with Super-B Epsilon V2 BMS
+- Live Cerbo GX running Venus OS v3.75 with Super-B Epsilon V2 BMS
 - VE.Can registers public document: `VE.Can-registers-public.pdf` (victronenergy.com)
