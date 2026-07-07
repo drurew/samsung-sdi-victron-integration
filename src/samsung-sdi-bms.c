@@ -700,8 +700,8 @@ int main(void) {
           "0x5F0 cell 1 = 3.520 V (real capture)");
     unsigned char t5f4[8] = {0x01,0x00,0xB0,0x0D,0xB1,0x0D,0x00,0x00};
     parse_cells(12, t5f4, 8);
-    CHECK(feq(st.cell[13], 3.505) && !st.cell_ok[12] + (st.cell_ok[12] ? 1 : 1),
-          "0x5F4 cell 14, zero padding skipped");
+    CHECK(feq(st.cell[12], 3.504) && feq(st.cell[13], 3.505),
+          "0x5F4 cells 13-14 valid");
 
     unsigned char t501[8] = {0x01,0x00, 0x00,0x10, 1, 1, 0, 0};
     parse_config(t501);
