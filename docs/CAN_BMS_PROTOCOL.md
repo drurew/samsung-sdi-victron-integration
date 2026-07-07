@@ -116,19 +116,24 @@ Severity: alarms (bytes 0-3) = severity 2 in Victron convention. Warnings
 ## What this protocol does NOT support
 
 The Victron CAN-BMS protocol was designed for basic managed batteries and
-deliberately omits diagnostics that Victron's own batteries do not provide:
+omits several fields that advanced BMSes like the Samsung SDI provide.
 
-- **Per-cell individual voltages** -- 0x373 provides min/max cell mV only,
-  not per-cell voltages. The Samsung SDI broadcasts 14 individual cell
-  voltages via 0x5F0-0x5F4; these are only available through the direct
-  D-Bus path (Python driver or `samsung-sdi-bms` default mode).
-- **Tray/module-level detail beyond counts** -- 0x372 provides counts only,
-  no per-tray voltages or faults.
-- **Heartbeat / watchdog** -- No keep-alive counter. The GX device detects
-  BMS loss by frame timeout (~5 seconds).
-- **SOH detail** -- Only a single integer percentage, no cycle count or
-  cumulative Ah (those are D-Bus paths only).
-- **Per-cell temperatures** -- Min/max only, no individual readings.
+| Capability                               | CAN-BMS support | Notes |
+|------------------------------------------|:---:|-------|
+| Per-cell individual voltages             | Yes | `/Cell/N` paths discovered via binary analysis of `can-bus-bms` (v3.75). GUI v2 does not render them individually. |
+| Cell voltage min/max                     | Yes | `/System/MinCellVoltage`, `/System/MaxCellVoltage` |
+| Cell voltage average                     | No  | |
+| Cell temperature min/max                 | Yes | `/System/MinCellTemperature`, `/System/MaxCellTemperature` |
+| Per-cell individual temperatures         | No  | Only aggregate min/max |
+| Cell ID of extreme values                | Yes | `/System/MinVoltageCellId`, etc. |
+| Tray/module counts                       | Yes | 0x372 online/offline |
+| Tray voltages (avg/min/max per tray)     | No  | |
+| Heartbeat / watchdog                     | No  | GX device detects BMS loss by frame timeout (~5 seconds) |
+| SOH detail (cycles, cumulative Ah)       | No  | D-Bus paths only |
+
+For full telemetry (per-cell temperatures, tray voltage detail,
+heartbeat, SOH cycle count), the direct D-Bus path
+(`samsung-sdi-bms` default mode) publishes all 28 Samsung SDI fields.
 
 ## Safety behavior
 
