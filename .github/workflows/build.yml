@@ -19,17 +19,19 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          sudo dpkg --add-architecture armhf
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross libdbus-1-dev
+          sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross libdbus-1-dev:armhf
 
-      - name: Build C driver (ARM, host headers)
+      - name: Build C driver (ARM)
         run: |
           arm-linux-gnueabihf-gcc -Os -s -std=c99 -Wall -D_GNU_SOURCE \
-            $(pkg-config --cflags dbus-1) \
+            -I/usr/arm-linux-gnueabihf/include/dbus-1.0 \
+            -I/usr/lib/arm-linux-gnueabihf/dbus-1.0/include \
             -o samsung-sdi-bms src/samsung-sdi-bms.c \
-            -lm -ldbus-1 || true
-          echo "ARM cross-compile may fail on libdbus link — unit tests cover correctness"
-          file samsung-sdi-bms 2>/dev/null || echo "ARM binary not produced (expected in CI)"
+            -L/usr/lib/arm-linux-gnueabihf -lm -ldbus-1
+          file samsung-sdi-bms
+          ls -la samsung-sdi-bms
           file samsung-sdi-bms
           ls -la samsung-sdi-bms
 
