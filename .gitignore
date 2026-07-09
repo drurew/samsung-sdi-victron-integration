@@ -4,3 +4,4 @@ __pycache__/
 *.tar.gz
 samsung-sdi-bms
 .vscode/
+dbus-systemcalc-py
